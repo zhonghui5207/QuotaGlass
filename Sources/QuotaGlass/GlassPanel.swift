@@ -24,11 +24,16 @@ final class GlassPanelController {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.cornerRadius = cornerRadius
+            // Clear variant: wallpaper colors refract through. Legibility dimming
+            // goes through tintColor so it rides the glass (specular highlights,
+            // refraction) instead of sitting on top as a flat film.
+            glass.style = .clear
             glass.contentView = host
             self.glassContainer = glass
         } else {
+            // Dark blur so the white-on-glass text hierarchy stays legible.
             let effect = NSVisualEffectView()
-            effect.material = .underWindowBackground
+            effect.material = .hudWindow
             effect.blendingMode = .behindWindow
             effect.state = .active
             effect.wantsLayer = true

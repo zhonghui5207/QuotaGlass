@@ -10,7 +10,6 @@ struct QuotaSnapshot: Identifiable, Equatable {
     var weeklyUsed: Double
     var fiveHourReset: String
     var weeklyReset: String
-    var overage: String?
     var source: String
     var fetchedAt: Date
     /// True when this snapshot is retained from a previous successful fetch
@@ -32,17 +31,6 @@ struct QuotaSnapshot: Identifiable, Equatable {
 
     var isClaude: Bool { serviceName.localizedCaseInsensitiveContains("Claude") }
     var isCodex: Bool { serviceName.localizedCaseInsensitiveContains("Codex") }
-
-    /// Compact spend figure pulled from the overage string, e.g. "USD $44.00 / $2000" -> "$44".
-    /// Returns nil when there is no overage or the spend is zero.
-    var spendDisplay: String? {
-        guard let overage else { return nil }
-        let regex = try? NSRegularExpression(pattern: "\\$([0-9]+(?:\\.[0-9]+)?)")
-        guard let match = regex?.firstMatch(in: overage, range: NSRange(overage.startIndex..., in: overage)),
-              let range = Range(match.range(at: 1), in: overage),
-              let amount = Double(overage[range]), amount > 0 else { return nil }
-        return "$\(Int(amount.rounded()))"
-    }
 }
 
 enum QuotaLoadState: Equatable {
@@ -79,7 +67,12 @@ final class QuotaStore: ObservableObject {
     }
 
     func refreshIfStale() async {
-        if let lastRefresh, Date().timeIntervalSince(lastRefresh) < minimumRefreshInterval { return }
+        await refreshIfOlder(than: minimumRefreshInterval)
+    }
+
+    /// Refresh only when the last successful fetch is older than `interval`.
+    func refreshIfOlder(than interval: TimeInterval) async {
+        if let lastRefresh, Date().timeIntervalSince(lastRefresh) < interval { return }
         await refresh()
     }
 
@@ -90,6 +83,7 @@ final class QuotaStore: ObservableObject {
             merge(fresh)
             lastRefresh = Date()
             state = .loaded
+            QuotaNotifier.shared.evaluate(quotas)
         } catch {
             // Total failure: keep whatever we already have (marked stale) rather
             // than wiping the UI; only fall back to demo data on a cold start.
@@ -122,8 +116,8 @@ final class QuotaStore: ObservableObject {
     static func demoQuotas() -> [QuotaSnapshot] {
         let now = Date()
         return [
-            QuotaSnapshot(serviceName: "Codex", accountName: "Demo", planName: "Pro", fiveHourUsed: 3, weeklyUsed: 28, fiveHourReset: "4h 48m", weeklyReset: "5d 17h", overage: nil, source: "Demo", fetchedAt: now),
-            QuotaSnapshot(serviceName: "Claude", accountName: "Demo", planName: "Max", fiveHourUsed: 18, weeklyUsed: 42, fiveHourReset: "3h 12m", weeklyReset: "4d 09h", overage: "$0 / $2000", source: "Demo", fetchedAt: now)
+            QuotaSnapshot(serviceName: "Codex", accountName: "Demo", planName: "Pro", fiveHourUsed: 3, weeklyUsed: 28, fiveHourReset: "4h 48m", weeklyReset: "5d 17h", source: "Demo", fetchedAt: now),
+            QuotaSnapshot(serviceName: "Claude", accountName: "Demo", planName: "Max", fiveHourUsed: 18, weeklyUsed: 42, fiveHourReset: "3h 12m", weeklyReset: "4d 09h", source: "Demo", fetchedAt: now)
         ]
     }
 }

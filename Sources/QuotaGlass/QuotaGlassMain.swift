@@ -29,8 +29,9 @@ struct QuotaGlassMain {
         while sem.wait(timeout: .now()) == .timedOut {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
+        // Dark moss background standing in for a wallpaper behind the clear glass.
         let snapshotView = PopoverRootView(store: store)
-            .background(Color(red: 0.93, green: 0.95, blue: 0.98))
+            .background(Color(red: 0.18, green: 0.24, blue: 0.16))
         let renderer = ImageRenderer(content: snapshotView)
         renderer.scale = 2
         guard let image = renderer.nsImage,
@@ -44,9 +45,9 @@ struct QuotaGlassMain {
         print("snapshot written: \(path)")
 
         // Also emit the menu-bar badge for verification.
+        let defaults = defaultMenuBarKeys(store.quotas)
         let badge = MenuBarBadge.make(
-            codex: store.primaryQuota(matching: "Codex"),
-            claude: store.primaryQuota(matching: "Claude")
+            snapshots: store.quotas.filter { defaults.contains(accountKey($0)) }
         )
         if let tiff = badge.tiffRepresentation,
            let rep = NSBitmapImageRep(data: tiff),
@@ -64,14 +65,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = QuotaStore()
     private var eventMonitor: Any?
     private var settingsWindow: NSWindow?
+    private var refreshTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = GlassPanelController(store: store)
         setupStatusItem()
         setupDismissMonitor()
+        setupAutoRefresh()
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings), name: .qgOpenSettings, object: nil
         )
+        NotificationCenter.default.addObserver(
+            forName: .qgPrefsChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updateStatusTitle() }
+        }
         if ProcessInfo.processInfo.environment["QG_SHOWPANEL"] != nil {
             Task { await store.refresh(); panel.showDebug() }
         } else if ProcessInfo.processInfo.environment["QG_SHOWSETTINGS"] != nil {
@@ -83,6 +91,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        refreshTimer?.invalidate()
+    }
+
+    /// Keeps the menu-bar badge honest while the panel stays closed: a 1-minute
+    /// tick refreshes once data is older than the user-chosen interval, and the
+    /// Mac waking from sleep triggers an immediate catch-up.
+    private func setupAutoRefresh() {
+        let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                await self.store.refreshIfOlder(than: TimeInterval(PrefsStore.shared.refreshInterval))
+            }
+        }
+        timer.tolerance = 10
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in await self?.store.refreshIfStale() }
+        }
     }
 
     private func setupStatusItem() {
@@ -110,14 +140,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.close()
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 420),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
             window.title = "QuotaGlass 设置"
             window.isReleasedWhenClosed = false
-            window.contentViewController = NSHostingController(rootView: AliasSettingsView(store: store))
+            window.contentViewController = NSHostingController(rootView: SettingsRootView(store: store))
             window.center()
             settingsWindow = window
         }
@@ -137,11 +167,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusTitle() {
         guard let button = statusItem.button else { return }
-        let codex = store.primaryQuota(matching: "Codex")
-        let claude = store.primaryQuota(matching: "Claude")
         button.title = ""
-        button.image = MenuBarBadge.make(codex: codex, claude: claude)
+        button.image = MenuBarBadge.make(snapshots: menuBarSnapshots())
         button.imagePosition = .imageOnly
         button.toolTip = "QuotaGlass — AI quota monitor"
+    }
+
+    /// Accounts the user checked for the menu bar; unconfigured accounts follow
+    /// the default rule (first Codex + first Claude).
+    private func menuBarSnapshots() -> [QuotaSnapshot] {
+        let defaults = defaultMenuBarKeys(store.quotas)
+        return store.quotas.filter { snapshot in
+            PrefsStore.shared.menuBarShow[accountKey(snapshot)] ?? defaults.contains(accountKey(snapshot))
+        }
     }
 }

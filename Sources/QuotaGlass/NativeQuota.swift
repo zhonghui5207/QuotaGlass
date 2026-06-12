@@ -267,7 +267,6 @@ struct NativeQuotaProvider {
             weeklyUsed: weekly?.usedPercent ?? 0,
             fiveHourReset: NativeQuotaProvider.formatReset(five?.resetsAt),
             weeklyReset: NativeQuotaProvider.formatReset(weekly?.resetsAt),
-            overage: nil,
             source: "Native",
             fetchedAt: Date()
         )

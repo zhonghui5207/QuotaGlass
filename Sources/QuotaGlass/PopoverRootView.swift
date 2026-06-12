@@ -4,17 +4,23 @@ import AppKit
 // Layout and visuals replicate the cc-bar popover 1:1 (github.com/nanvon/cc-bar),
 // adapted to QuotaGlass's local usage-checker data source.
 
-// MARK: - Accent colors (cc-bar CodexAccent / ClaudeAccent)
+// MARK: - Theme
+// Clear Liquid Glass look: monochrome white vibrancy over a dimming layer,
+// color reserved exclusively for low-quota warnings.
 
-extension Color {
-    static let codexAccent = Color(red: 0x6C / 255, green: 0x6C / 255, blue: 0x70 / 255) // #6C6C70
-    static let claudeAccent = Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255) // #D97757
-}
+enum Theme {
+    static let textPrimary = Color.white
+    static let textSecondary = Color.white.opacity(0.65)
+    static let textTertiary = Color.white.opacity(0.42)
+    static let divider = Color.white.opacity(0.14)
+    static let barTrack = Color.white.opacity(0.12)
 
-private func accent(for snapshot: QuotaSnapshot) -> Color {
-    if snapshot.isClaude { return .claudeAccent }
-    if snapshot.isCodex { return .codexAccent }
-    return Color(red: 0.30, green: 0.50, blue: 0.86)
+    /// White normally; orange under 30% remaining, red under 10%.
+    static func tint(remaining: Double) -> Color {
+        if remaining < 10 { return Color(red: 1.00, green: 0.33, blue: 0.27) }
+        if remaining < 30 { return Color(red: 1.00, green: 0.64, blue: 0.26) }
+        return .white
+    }
 }
 
 func displayTitle(_ snapshot: QuotaSnapshot) -> String {
@@ -37,7 +43,7 @@ struct PopoverRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
+            Rectangle().fill(Theme.divider).frame(height: 1)
             content
         }
         .frame(width: 340)
@@ -51,9 +57,10 @@ struct PopoverRootView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("用量")
                     .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
                 Text(subtitle)
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                     .monospacedDigit()
                     .lineLimit(1)
             }
@@ -68,16 +75,9 @@ struct PopoverRootView: View {
             Button(action: refresh) {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                     .rotationEffect(.degrees(refreshRotation))
                     .animation(.easeInOut(duration: 0.7), value: refreshRotation)
-            }
-            .buttonStyle(PopoverIconButtonStyle())
-
-            Button {} label: {
-                Image(systemName: "chart.bar.xaxis")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
 
@@ -86,14 +86,14 @@ struct PopoverRootView: View {
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
 
             Button { NSApp.terminate(nil) } label: {
                 Image(systemName: "power")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
         }
@@ -136,20 +136,22 @@ struct PopoverRootView: View {
                 ProgressView()
                 Text("正在读取用量…")
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 28)
         } else {
             VStack(spacing: 0) {
                 ForEach(Array(orderedQuotas.enumerated()), id: \.element.id) { index, snapshot in
-                    if index > 0 { Divider().padding(.horizontal, 16) }
+                    if index > 0 {
+                        Rectangle().fill(Theme.divider).frame(height: 1).padding(.horizontal, 16)
+                    }
                     ServiceBlockView(snapshot: snapshot)
                 }
                 if case .failed(let message) = store.state {
                     Text(shortError(message))
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
@@ -183,7 +185,8 @@ struct PopoverRootView: View {
 private struct ServiceBlockView: View {
     let snapshot: QuotaSnapshot
 
-    private var tint: Color { accent(for: snapshot) }
+    private var fiveHourTint: Color { Theme.tint(remaining: snapshot.fiveHourRemaining) }
+    private var weeklyTint: Color { Theme.tint(remaining: snapshot.weeklyRemaining) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -198,24 +201,31 @@ private struct ServiceBlockView: View {
 
     private var headerRow: some View {
         HStack(spacing: 9) {
-            ServiceTile(logoName: logoName(snapshot), fallback: String(snapshot.serviceName.prefix(1)), tint: tint)
+            ServiceTile(logoName: logoName(snapshot), fallback: String(snapshot.serviceName.prefix(1)))
 
             (
                 Text(displayTitle(snapshot))
                     .font(.system(size: 13, weight: .semibold))
                     .kerning(-0.1)
-                    .foregroundColor(.primary)
+                    .foregroundColor(Theme.textPrimary)
                 + Text("   ")
                 + Text(AliasStore.shared.alias(for: accountKey(snapshot)) ?? snapshot.displaySubtitle)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary.opacity(0.75))
+                    .foregroundColor(Color.white.opacity(0.55))
             )
             .lineLimit(1)
             .truncationMode(.tail)
 
             Spacer(minLength: 0)
 
-            Circle().fill(Color.green).frame(width: 6, height: 6)
+            if snapshot.isStale {
+                Text("旧数据")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+            }
+            Circle()
+                .fill(snapshot.isStale ? Color.orange : Color.green)
+                .frame(width: 6, height: 6)
         }
     }
 
@@ -227,47 +237,32 @@ private struct ServiceBlockView: View {
                         .font(.system(size: 32, weight: .semibold))
                         .monospacedDigit()
                         .kerning(-0.8)
-                        .foregroundStyle(tint)
+                        .foregroundStyle(fiveHourTint)
                         .lineLimit(1)
                     Text("%")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(tint.opacity(0.75))
+                        .foregroundStyle(fiveHourTint.opacity(0.75))
                 }
                 .fixedSize()
 
                 Text("5-HOUR · 五小时")
                     .font(.system(size: 9, weight: .semibold))
                     .kerning(0.5)
-                    .foregroundStyle(.quaternary)
+                    .foregroundStyle(Theme.textTertiary)
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                ProgressBar(value: snapshot.fiveHourRemaining / 100, tint: tint, height: 7)
+                ProgressBar(value: snapshot.fiveHourRemaining / 100, tint: fiveHourTint, height: 6)
 
-                VStack(spacing: 1) {
-                    HStack(spacing: 0) {
-                        Text(snapshot.fiveHourReset)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        Spacer(minLength: 8)
-
-                        HStack(spacing: 10) {
-                            statInline(label: "今日", value: snapshot.spendDisplay ?? "—")
-                            statInline(label: "本周", value: "—")
-                        }
-                    }
-
-                    HStack(spacing: 0) {
-                        Text("重置")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.quaternary)
-                        Spacer(minLength: 0)
-                        Text("花费")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.quaternary)
-                    }
+                HStack(spacing: 5) {
+                    Text("重置")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(snapshot.fiveHourReset)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -279,34 +274,23 @@ private struct ServiceBlockView: View {
             Text("WK")
                 .font(.system(size: 9, weight: .semibold))
                 .kerning(0.6)
-                .foregroundStyle(.quaternary)
+                .foregroundStyle(Theme.textTertiary)
                 .frame(width: 36, alignment: .leading)
 
-            ProgressBar(value: snapshot.weeklyRemaining / 100, tint: tint, height: 2.5)
+            ProgressBar(value: snapshot.weeklyRemaining / 100, tint: weeklyTint, height: 2.5)
 
             Text("\(Int(snapshot.weeklyRemaining.rounded()))%")
                 .font(.system(size: 10.5, weight: .medium))
                 .monospacedDigit()
-                .foregroundStyle(tint)
+                .foregroundStyle(weeklyTint)
 
             Text(snapshot.weeklyReset)
                 .font(.system(size: 10.5))
-                .foregroundStyle(.quaternary)
+                .foregroundStyle(Theme.textTertiary)
                 .lineLimit(1)
         }
     }
 
-    private func statInline(label: String, value: String) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundStyle(.quaternary)
-            Text(value)
-                .font(.system(size: 11, weight: .medium))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-        }
-    }
 }
 
 // MARK: - ProgressBar (cc-bar)
@@ -319,10 +303,18 @@ struct ProgressBar: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.18))
                 Capsule()
-                    .fill(tint)
-                    .frame(width: max(0, proxy.size.width * clamped))
+                    .fill(Theme.barTrack)
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5))
+                Capsule()
+                    .fill(
+                        // Lit-from-above glass tube: bright top edge, translucent body.
+                        LinearGradient(
+                            colors: [tint.opacity(0.95), tint.opacity(0.55)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .frame(width: max(height, proxy.size.width * clamped))
             }
         }
         .frame(height: height)
@@ -336,13 +328,20 @@ struct ProgressBar: View {
 struct ServiceTile: View {
     let logoName: String
     let fallback: String
-    let tint: Color
     var size: CGFloat = 22
     var logoSize: CGFloat = 14
     var cornerRadius: CGFloat = 6
 
+    /// Brand tiles: OpenAI black-on-white, Claude white-on-terracotta (#D97757).
+    private static let claudeBrand = Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255)
+
     private var isOpenAIBrand: Bool { logoName == "codex" }
-    private var background: Color { isOpenAIBrand ? .white : tint }
+    private var isClaudeBrand: Bool { logoName == "claude" }
+    private var background: Color {
+        if isOpenAIBrand { return .white }
+        if isClaudeBrand { return Self.claudeBrand }
+        return Color.white.opacity(0.14)
+    }
     private var foreground: Color { isOpenAIBrand ? .black : .white }
 
     var body: some View {
@@ -419,7 +418,7 @@ struct PopoverIconButtonStyle: ButtonStyle {
             .frame(width: 26, height: 22)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(hovering && isEnabled ? Color.primary.opacity(0.08) : .clear)
+                    .fill(hovering && isEnabled ? Color.white.opacity(0.12) : .clear)
             )
             .opacity(configuration.isPressed ? 0.5 : 1)
             .contentShape(Rectangle())

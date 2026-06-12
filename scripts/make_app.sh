@@ -9,8 +9,10 @@ cd "$ROOT"
 swift build -c release
 
 rm -rf "$APP"
-mkdir -p "$MACOS"
+mkdir -p "$MACOS" "$APP/Contents/Resources"
 cp "$ROOT/.build/release/QuotaGlass" "$MACOS/QuotaGlass"
+# Bundle.module fatalErrors at runtime if the SPM resource bundle is missing.
+cp -R "$ROOT/.build/release/QuotaGlass_QuotaGlass.bundle" "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

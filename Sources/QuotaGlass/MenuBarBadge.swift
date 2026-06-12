@@ -1,15 +1,25 @@
 import AppKit
 import SwiftUI
 
-// Menu-bar status item content: each shown service draws its logo (template SVG)
-// followed by its remaining-percent text. Rendered through SwiftUI ImageRenderer
-// (which rasterizes the bundled SVGs reliably) into a template NSImage so the
-// menu bar tints it for light/dark automatically.
+// Menu-bar status item content: each shown account draws its service logo
+// (template SVG) followed by its remaining-percent text. Rendered through
+// SwiftUI ImageRenderer (which rasterizes the bundled SVGs reliably) into a
+// template NSImage so the menu bar tints it for light/dark automatically.
 
 @MainActor
 enum MenuBarBadge {
-    static func make(codex: QuotaSnapshot?, claude: QuotaSnapshot?) -> NSImage {
-        let renderer = ImageRenderer(content: BadgeView(codex: codex, claude: claude))
+    static func make(snapshots: [QuotaSnapshot]) -> NSImage {
+        guard !snapshots.isEmpty else {
+            // Nothing selected: a plain gauge glyph keeps the item clickable.
+            if let symbol = NSImage(systemSymbolName: "gauge", accessibilityDescription: "QuotaGlass") {
+                symbol.isTemplate = true
+                return symbol
+            }
+            let blank = NSImage(size: NSSize(width: 18, height: 18))
+            blank.isTemplate = true
+            return blank
+        }
+        let renderer = ImageRenderer(content: BadgeView(snapshots: snapshots, initials: initials(for: snapshots)))
         renderer.scale = 2
         renderer.isOpaque = false
         if let image = renderer.nsImage {
@@ -21,24 +31,44 @@ enum MenuBarBadge {
         fallback.isTemplate = true
         return fallback
     }
+
+    /// Alias initials, only for accounts whose service appears more than once
+    /// in the badge — a lone Codex or Claude needs no disambiguation.
+    private static func initials(for snapshots: [QuotaSnapshot]) -> [UUID: String] {
+        var serviceCounts: [String: Int] = [:]
+        for snapshot in snapshots { serviceCounts[snapshot.serviceName, default: 0] += 1 }
+        var result: [UUID: String] = [:]
+        for snapshot in snapshots where (serviceCounts[snapshot.serviceName] ?? 0) > 1 {
+            let key = accountKey(snapshot)
+            let name = AliasStore.shared.alias(for: key) ?? snapshot.accountName
+            if let first = name.first { result[snapshot.id] = String(first).uppercased() }
+        }
+        return result
+    }
 }
 
 private struct BadgeView: View {
-    let codex: QuotaSnapshot?
-    let claude: QuotaSnapshot?
+    let snapshots: [QuotaSnapshot]
+    let initials: [UUID: String]
 
     var body: some View {
         HStack(spacing: 9) {
-            if let codex { segment(logo: "codex", snapshot: codex) }
-            if let claude { segment(logo: "claude", snapshot: claude) }
+            ForEach(snapshots) { snapshot in
+                segment(snapshot)
+            }
         }
         .frame(height: 16)
         .foregroundStyle(.black)
     }
 
-    private func segment(logo: String, snapshot: QuotaSnapshot) -> some View {
+    private func segment(_ snapshot: QuotaSnapshot) -> some View {
         HStack(spacing: 3) {
-            logoImage(logo)
+            logoImage(snapshot.isCodex ? "codex" : snapshot.isClaude ? "claude" : "")
+            if let initial = initials[snapshot.id] {
+                Text(initial)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.black)
+            }
             Text("\(Int(snapshot.fiveHourRemaining.rounded()))%")
                 .font(.system(size: 12, weight: .regular))
                 .monospacedDigit()
