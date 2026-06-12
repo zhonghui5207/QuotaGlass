@@ -12,7 +12,8 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "QuotaGlass",
-            path: "Sources/QuotaGlass"
+            path: "Sources/QuotaGlass",
+            resources: [.process("Resources")]
         )
     ]
 )

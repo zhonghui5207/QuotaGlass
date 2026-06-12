@@ -13,12 +13,36 @@ struct QuotaSnapshot: Identifiable, Equatable {
     var overage: String?
     var source: String
     var fetchedAt: Date
+    /// True when this snapshot is retained from a previous successful fetch
+    /// because the latest refresh did not include this account.
+    var isStale: Bool = false
 
     var fiveHourRemaining: Double { max(0, min(100, 100 - fiveHourUsed)) }
     var weeklyRemaining: Double { max(0, min(100, 100 - weeklyUsed)) }
 
+    /// Used percentage (clamped) — this is what the "用量" UI shows.
+    var fiveHourUsedPct: Double { max(0, min(100, fiveHourUsed)) }
+    var weeklyUsedPct: Double { max(0, min(100, weeklyUsed)) }
+
+    /// Short label for the account, preferring a real plan name over the generic "Account".
+    var displaySubtitle: String {
+        if !planName.isEmpty && planName != "Account" { return planName }
+        return accountName
+    }
+
     var isClaude: Bool { serviceName.localizedCaseInsensitiveContains("Claude") }
     var isCodex: Bool { serviceName.localizedCaseInsensitiveContains("Codex") }
+
+    /// Compact spend figure pulled from the overage string, e.g. "USD $44.00 / $2000" -> "$44".
+    /// Returns nil when there is no overage or the spend is zero.
+    var spendDisplay: String? {
+        guard let overage else { return nil }
+        let regex = try? NSRegularExpression(pattern: "\\$([0-9]+(?:\\.[0-9]+)?)")
+        guard let match = regex?.firstMatch(in: overage, range: NSRange(overage.startIndex..., in: overage)),
+              let range = Range(match.range(at: 1), in: overage),
+              let amount = Double(overage[range]), amount > 0 else { return nil }
+        return "$\(Int(amount.rounded()))"
+    }
 }
 
 enum QuotaLoadState: Equatable {
@@ -41,6 +65,15 @@ final class QuotaStore: ObservableObject {
     private let provider = ScriptQuotaProvider()
     private let minimumRefreshInterval: TimeInterval = 60
 
+    // Per-account cache so a transient fetch failure for one account never makes
+    // it vanish from the UI. Keyed by service+account, ordered by first-seen.
+    private var cache: [String: QuotaSnapshot] = [:]
+    private var orderKeys: [String] = []
+
+    private func key(for snapshot: QuotaSnapshot) -> String {
+        snapshot.serviceName + "·" + snapshot.accountName
+    }
+
     func primaryQuota(matching name: String) -> QuotaSnapshot? {
         quotas.first { $0.serviceName.localizedCaseInsensitiveContains(name) }
     }
@@ -54,13 +87,36 @@ final class QuotaStore: ObservableObject {
         state = .loading
         do {
             let fresh = try await provider.loadQuotas()
-            quotas = fresh
+            merge(fresh)
             lastRefresh = Date()
             state = .loaded
         } catch {
-            if quotas.isEmpty { quotas = Self.demoQuotas() }
+            // Total failure: keep whatever we already have (marked stale) rather
+            // than wiping the UI; only fall back to demo data on a cold start.
+            if cache.isEmpty {
+                merge(Self.demoQuotas())
+            } else {
+                for k in cache.keys { cache[k]?.isStale = true }
+                rebuild()
+            }
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Merge fresh snapshots into the cache. Accounts present in `fresh` are
+    /// updated (live); accounts absent this round are retained from cache.
+    private func merge(_ fresh: [QuotaSnapshot]) {
+        for var snapshot in fresh {
+            snapshot.isStale = false
+            let k = key(for: snapshot)
+            if cache[k] == nil { orderKeys.append(k) }
+            cache[k] = snapshot
+        }
+        rebuild()
+    }
+
+    private func rebuild() {
+        quotas = orderKeys.compactMap { cache[$0] }
     }
 
     static func demoQuotas() -> [QuotaSnapshot] {
