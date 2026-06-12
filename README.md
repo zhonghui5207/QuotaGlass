@@ -2,6 +2,10 @@
 
 A native macOS menu-bar quota monitor for AI coding subscriptions (Codex / Claude Code), with a fully transparent terminal-style popover (JetBrainsMono, zero blur).
 
+<p align="center">
+  <img src="docs/screenshot.png" width="442" alt="QuotaGlass — menu-bar badge with per-account initials, transparent popover with low-quota warnings" />
+</p>
+
 ## Install
 
 Download `QuotaGlass.app.zip` from the [latest release](https://github.com/zhonghui5207/QuotaGlass/releases/latest), unzip, and drag `QuotaGlass.app` into `/Applications`.
