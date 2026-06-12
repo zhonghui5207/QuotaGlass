@@ -1,6 +1,17 @@
 # QuotaGlass
 
-A native macOS menu-bar quota monitor for AI coding subscriptions (Codex / Claude Code), with a Liquid Glass popover in the macOS 26 widget style.
+A native macOS menu-bar quota monitor for AI coding subscriptions (Codex / Claude Code), with a fully transparent terminal-style popover (JetBrainsMono, zero blur).
+
+## Install
+
+Download `QuotaGlass.app.zip` from the [latest release](https://github.com/zhonghui5207/QuotaGlass/releases/latest), unzip, and drag `QuotaGlass.app` into `/Applications`.
+
+The app is ad-hoc signed (no paid Apple Developer certificate), so the first launch needs one extra step — either:
+
+- Right-click the app → **Open** → **Open** in the dialog, or
+- `xattr -d com.apple.quarantine /Applications/QuotaGlass.app`
+
+Then click the menu-bar badge. Accounts are picked up automatically from your logged-in Codex / Claude Code CLIs; more accounts can be added in settings via in-app OAuth login.
 
 ## Features
 
