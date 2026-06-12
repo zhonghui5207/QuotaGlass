@@ -45,7 +45,14 @@ enum CodexRefresher {
         account.accessToken = newAccess
         account.refreshToken = newRefresh
         if let newId { account.idToken = newId }
-        writeBack(accessToken: newAccess, refreshToken: newRefresh, idToken: newId)
+        if let importedId = account.importedId {
+            ImportedAccountStore.saveTokens(
+                ImportedTokens(accessToken: newAccess, refreshToken: newRefresh, idToken: newId ?? account.idToken, expiresAtMillis: nil),
+                accountId: "codex:" + importedId
+            )
+        } else {
+            writeBack(accessToken: newAccess, refreshToken: newRefresh, idToken: newId)
+        }
         return newAccess
     }
 
@@ -153,6 +160,11 @@ enum ClaudeRefresher {
     private static func writeBack(account: NativeClaudeAccount, accessToken: String, refreshToken: String, expiresAt: Date) {
         let millis = Int(expiresAt.timeIntervalSince1970 * 1000)
         switch account.source {
+        case .imported(let id):
+            ImportedAccountStore.saveTokens(
+                ImportedTokens(accessToken: accessToken, refreshToken: refreshToken, idToken: nil, expiresAtMillis: millis),
+                accountId: "claude:" + id
+            )
         case .file:
             let url = ClaudeAuthReader.credentialsFileURL()
             var root: [String: Any] = [:]
@@ -228,7 +240,7 @@ struct NativeQuotaProvider {
     func loadQuotas() async throws -> [QuotaSnapshot] {
         var result: [QuotaSnapshot] = []
 
-        if var codex = CodexAuthReader.load() {
+        for var codex in codexAccounts() {
             if let token = await CodexRefresher.ensureFresh(&codex),
                let usage = await CodexUsage.fetch(accessToken: token, accountId: codex.accountId) {
                 result.append(snapshot(
@@ -236,7 +248,8 @@ struct NativeQuotaProvider {
                     account: codex.email ?? "Codex",
                     plan: codex.planType,
                     five: usage.five,
-                    weekly: usage.weekly
+                    weekly: usage.weekly,
+                    importedId: codex.importedId
                 ))
             }
         }
@@ -244,12 +257,15 @@ struct NativeQuotaProvider {
         for var claude in ClaudeAuthReader.loadAll() {
             if let token = await ClaudeRefresher.ensureFresh(&claude),
                let usage = await ClaudeUsage.fetch(accessToken: token) {
+                var importedId: String?
+                if case .imported(let id) = claude.source { importedId = id }
                 result.append(snapshot(
                     service: "Claude",
                     account: claude.displayAccount,
                     plan: claude.subscriptionType,
                     five: usage.five,
-                    weekly: usage.weekly
+                    weekly: usage.weekly,
+                    importedId: importedId
                 ))
             }
         }
@@ -258,7 +274,30 @@ struct NativeQuotaProvider {
         return result
     }
 
-    private func snapshot(service: String, account: String, plan: String?, five: NativeWindow?, weekly: NativeWindow?) -> QuotaSnapshot {
+    /// The default auth.json account plus OAuth-imported ones, deduplicated by
+    /// chatgpt_account_id (an imported copy of the CLI's account is dropped).
+    private func codexAccounts() -> [NativeCodexAccount] {
+        var accounts: [NativeCodexAccount] = []
+        if let def = CodexAuthReader.load() { accounts.append(def) }
+        let defaultAccountId = accounts.first?.accountId
+
+        for imported in ImportedAccountStore.loadAll() where imported.service == .codex {
+            if let defaultAccountId, imported.id.hasPrefix(defaultAccountId) { continue }
+            guard let tokens = ImportedAccountStore.loadTokens(accountId: ImportedAccountStore.tokenKey(imported)) else { continue }
+            accounts.append(NativeCodexAccount(
+                email: imported.email,
+                planType: imported.planType,
+                accountId: imported.id.split(separator: ":").first.map(String.init),
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken,
+                idToken: tokens.idToken,
+                importedId: imported.id
+            ))
+        }
+        return accounts
+    }
+
+    private func snapshot(service: String, account: String, plan: String?, five: NativeWindow?, weekly: NativeWindow?, importedId: String?) -> QuotaSnapshot {
         QuotaSnapshot(
             serviceName: service,
             accountName: account,
@@ -267,8 +306,9 @@ struct NativeQuotaProvider {
             weeklyUsed: weekly?.usedPercent ?? 0,
             fiveHourReset: NativeQuotaProvider.formatReset(five?.resetsAt),
             weeklyReset: NativeQuotaProvider.formatReset(weekly?.resetsAt),
-            source: "Native",
-            fetchedAt: Date()
+            source: importedId == nil ? "Native" : "Imported",
+            fetchedAt: Date(),
+            importedId: importedId
         )
     }
 

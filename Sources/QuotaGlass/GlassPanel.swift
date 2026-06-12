@@ -20,29 +20,13 @@ final class GlassPanelController {
         host.autoresizingMask = [.width, .height]
         self.hosting = host
 
-        let cornerRadius: CGFloat = 26
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.cornerRadius = cornerRadius
-            // Clear variant: wallpaper colors refract through. Legibility dimming
-            // goes through tintColor so it rides the glass (specular highlights,
-            // refraction) instead of sitting on top as a flat film.
-            glass.style = .clear
-            glass.contentView = host
-            self.glassContainer = glass
-        } else {
-            // Dark blur so the white-on-glass text hierarchy stays legible.
-            let effect = NSVisualEffectView()
-            effect.material = .hudWindow
-            effect.blendingMode = .behindWindow
-            effect.state = .active
-            effect.wantsLayer = true
-            effect.layer?.cornerRadius = cornerRadius
-            effect.layer?.masksToBounds = true
-            host.frame = effect.bounds
-            effect.addSubview(host)
-            self.glassContainer = effect
-        }
+        // Ghostty-style alignment (background-opacity 0, blur off): zero blur,
+        // zero material — the content floats directly over the desktop. The
+        // rounded outline is drawn by the SwiftUI root view.
+        let container = NSView()
+        host.frame = container.bounds
+        container.addSubview(host)
+        self.glassContainer = container
 
         panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 340, height: 480),
@@ -52,7 +36,9 @@ final class GlassPanelController {
         )
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hasShadow = true
+        // No slab shadow — a fully transparent panel with a shadow reads as a
+        // ghostly rectangle over the wallpaper.
+        panel.hasShadow = false
         panel.level = .popUpMenu
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false

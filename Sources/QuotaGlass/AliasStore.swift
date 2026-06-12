@@ -41,12 +41,27 @@ struct SettingsRootView: View {
     @ObservedObject private var aliases = AliasStore.shared
     @ObservedObject private var prefs = PrefsStore.shared
     @State private var launchAtLogin = false
+    @State private var loginSheet: LoginSheet?
+
+    enum LoginSheet: String, Identifiable {
+        case claude, codex
+        var id: String { rawValue }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("账号")
-                    .font(.system(size: 15, weight: .semibold))
+                HStack {
+                    Text("账号")
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                    Menu("添加账号") {
+                        Button("登录 Claude 账号…") { loginSheet = .claude }
+                        Button("登录 Codex 账号…") { loginSheet = .codex }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
                 Text("别名用于列表展示；勾选「菜单栏」的账号会显示在菜单栏徽章里。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -97,14 +112,30 @@ struct SettingsRootView: View {
         .padding(20)
         .frame(width: 460)
         .onAppear { launchAtLogin = prefs.launchAtLogin }
+        .sheet(item: $loginSheet) { sheet in
+            switch sheet {
+            case .claude: ClaudeLoginSheet(store: store)
+            case .codex: CodexLoginSheet(store: store)
+            }
+        }
     }
 
     private func row(for snapshot: QuotaSnapshot) -> some View {
         let key = accountKey(snapshot)
         return HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(displayTitle(snapshot))
-                    .font(.system(size: 13, weight: .medium))
+                HStack(spacing: 5) {
+                    Text(displayTitle(snapshot))
+                        .font(.system(size: 13, weight: .medium))
+                    if snapshot.importedId != nil {
+                        Text("导入")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Text("\(snapshot.accountName) · 5H \(Int(snapshot.fiveHourRemaining.rounded()))%")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -116,7 +147,25 @@ struct SettingsRootView: View {
                 .frame(width: 130)
             Toggle("菜单栏", isOn: menuBarBinding(for: key))
                 .toggleStyle(.checkbox)
+            if let importedId = snapshot.importedId {
+                Button {
+                    removeImported(id: importedId)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help("移除这个导入的账号")
+            }
         }
+    }
+
+    private func removeImported(id: String) {
+        if let account = ImportedAccountStore.loadAll().first(where: { $0.id == id }) {
+            ImportedAccountStore.remove(account)
+        }
+        store.removeQuota(importedId: id)
+        Task { await store.refresh() }
     }
 
     private func aliasBinding(for key: String) -> Binding<String> {

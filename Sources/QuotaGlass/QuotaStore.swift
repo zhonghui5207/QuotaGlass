@@ -12,6 +12,8 @@ struct QuotaSnapshot: Identifiable, Equatable {
     var weeklyReset: String
     var source: String
     var fetchedAt: Date
+    /// Set when this account was added via in-app OAuth login (removable in settings).
+    var importedId: String? = nil
     /// True when this snapshot is retained from a previous successful fetch
     /// because the latest refresh did not include this account.
     var isStale: Bool = false
@@ -95,6 +97,17 @@ final class QuotaStore: ObservableObject {
             }
             state = .failed(error.localizedDescription)
         }
+    }
+
+    /// Drop a removed imported account from the cache immediately (the merge
+    /// path retains absent accounts by design, so removal must be explicit).
+    func removeQuota(importedId: String) {
+        let keys = cache.filter { $0.value.importedId == importedId }.map(\.key)
+        for k in keys {
+            cache.removeValue(forKey: k)
+            orderKeys.removeAll { $0 == k }
+        }
+        rebuild()
     }
 
     /// Merge fresh snapshots into the cache. Accounts present in `fresh` are

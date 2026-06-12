@@ -21,6 +21,21 @@ enum Theme {
         if remaining < 30 { return Color(red: 1.00, green: 0.64, blue: 0.26) }
         return .white
     }
+
+    /// JetBrainsMono Nerd Font (Ghostty alignment; base style Medium), with a
+    /// system-font fallback when the font isn't installed.
+    static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        let name: String
+        switch weight {
+        case .bold, .heavy, .black: name = "JetBrainsMonoNF-Bold"
+        case .semibold: name = "JetBrainsMonoNF-SemiBold"
+        default: name = "JetBrainsMonoNF-Medium"
+        }
+        guard NSFont(name: name, size: size) != nil else {
+            return .system(size: size, weight: weight)
+        }
+        return .custom(name, size: size)
+    }
 }
 
 func displayTitle(_ snapshot: QuotaSnapshot) -> String {
@@ -48,6 +63,16 @@ struct PopoverRootView: View {
         }
         .frame(width: 340)
         .fixedSize(horizontal: false, vertical: true)
+        // Soft per-glyph shadow keeps white text readable over light wallpaper
+        // without any blur/material behind it.
+        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
+        // Ghostty 等价 background-opacity ≈ 0.20：纯透明度垫底，无模糊。
+        .background(Color.black.opacity(0.20))
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+        )
     }
 
     // MARK: Header
@@ -56,10 +81,10 @@ struct PopoverRootView: View {
         HStack(spacing: 4) {
             VStack(alignment: .leading, spacing: 1) {
                 Text("用量")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(Theme.font(size: 13, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
                 Text(subtitle)
-                    .font(.system(size: 11))
+                    .font(Theme.font(size: 11))
                     .foregroundStyle(Theme.textSecondary)
                     .monospacedDigit()
                     .lineLimit(1)
@@ -67,14 +92,14 @@ struct PopoverRootView: View {
 
             Spacer()
 
-            Circle()
-                .fill(statusColor)
-                .frame(width: 7, height: 7)
+            Image(systemName: "drop.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(statusColor)
                 .padding(.trailing, 4)
 
             Button(action: refresh) {
                 Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(Theme.font(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
                     .rotationEffect(.degrees(refreshRotation))
                     .animation(.easeInOut(duration: 0.7), value: refreshRotation)
@@ -85,14 +110,14 @@ struct PopoverRootView: View {
                 NotificationCenter.default.post(name: .qgOpenSettings, object: nil)
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(Theme.font(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
 
             Button { NSApp.terminate(nil) } label: {
                 Image(systemName: "power")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(Theme.font(size: 13, weight: .medium))
                     .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
@@ -115,10 +140,10 @@ struct PopoverRootView: View {
 
     private var statusColor: Color {
         switch store.state {
-        case .loaded: .green
-        case .loading: .green
+        case .loaded: Color.white.opacity(0.9)
+        case .loading: Color.white.opacity(0.9)
         case .failed: .orange
-        case .idle: .secondary
+        case .idle: Theme.textTertiary
         }
     }
 
@@ -135,7 +160,7 @@ struct PopoverRootView: View {
             VStack(spacing: 8) {
                 ProgressView()
                 Text("正在读取用量…")
-                    .font(.system(size: 12))
+                    .font(Theme.font(size: 12))
                     .foregroundStyle(Theme.textSecondary)
             }
             .frame(maxWidth: .infinity)
@@ -150,7 +175,7 @@ struct PopoverRootView: View {
                 }
                 if case .failed(let message) = store.state {
                     Text(shortError(message))
-                        .font(.system(size: 11))
+                        .font(Theme.font(size: 11))
                         .foregroundStyle(Theme.textSecondary)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -205,12 +230,12 @@ private struct ServiceBlockView: View {
 
             (
                 Text(displayTitle(snapshot))
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(Theme.font(size: 13, weight: .semibold))
                     .kerning(-0.1)
                     .foregroundColor(Theme.textPrimary)
                 + Text("   ")
                 + Text(AliasStore.shared.alias(for: accountKey(snapshot)) ?? snapshot.displaySubtitle)
-                    .font(.system(size: 11))
+                    .font(Theme.font(size: 11))
                     .foregroundColor(Color.white.opacity(0.55))
             )
             .lineLimit(1)
@@ -220,12 +245,18 @@ private struct ServiceBlockView: View {
 
             if snapshot.isStale {
                 Text("旧数据")
-                    .font(.system(size: 9))
+                    .font(Theme.font(size: 9))
                     .foregroundStyle(.orange)
             }
-            Circle()
-                .fill(snapshot.isStale ? Color.orange : Color.green)
-                .frame(width: 6, height: 6)
+            // QuotaGlass signature: a droplet, tinted by quota tier
+            // (white = healthy, orange = <30%, red = <10%), orange when stale.
+            Image(systemName: "drop.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(
+                    snapshot.isStale
+                        ? Color.orange
+                        : Theme.tint(remaining: snapshot.fiveHourRemaining).opacity(0.9)
+                )
         }
     }
 
@@ -234,19 +265,19 @@ private struct ServiceBlockView: View {
             VStack(alignment: .center, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
                     Text("\(Int(snapshot.fiveHourRemaining.rounded()))")
-                        .font(.system(size: 32, weight: .semibold))
+                        .font(Theme.font(size: 32, weight: .semibold))
                         .monospacedDigit()
                         .kerning(-0.8)
                         .foregroundStyle(fiveHourTint)
                         .lineLimit(1)
                     Text("%")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(Theme.font(size: 16, weight: .semibold))
                         .foregroundStyle(fiveHourTint.opacity(0.75))
                 }
                 .fixedSize()
 
                 Text("5-HOUR · 五小时")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(Theme.font(size: 9, weight: .semibold))
                     .kerning(0.5)
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -256,10 +287,10 @@ private struct ServiceBlockView: View {
 
                 HStack(spacing: 5) {
                     Text("重置")
-                        .font(.system(size: 9.5))
+                        .font(Theme.font(size: 9.5))
                         .foregroundStyle(Theme.textTertiary)
                     Text(snapshot.fiveHourReset)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(Theme.font(size: 11, weight: .medium))
                         .foregroundStyle(Theme.textPrimary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
@@ -272,7 +303,7 @@ private struct ServiceBlockView: View {
     private var weeklyRow: some View {
         HStack(spacing: 10) {
             Text("WK")
-                .font(.system(size: 9, weight: .semibold))
+                .font(Theme.font(size: 9, weight: .semibold))
                 .kerning(0.6)
                 .foregroundStyle(Theme.textTertiary)
                 .frame(width: 36, alignment: .leading)
@@ -280,12 +311,12 @@ private struct ServiceBlockView: View {
             ProgressBar(value: snapshot.weeklyRemaining / 100, tint: weeklyTint, height: 2.5)
 
             Text("\(Int(snapshot.weeklyRemaining.rounded()))%")
-                .font(.system(size: 10.5, weight: .medium))
+                .font(Theme.font(size: 10.5, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(weeklyTint)
 
             Text(snapshot.weeklyReset)
-                .font(.system(size: 10.5))
+                .font(Theme.font(size: 10.5))
                 .foregroundStyle(Theme.textTertiary)
                 .lineLimit(1)
         }
@@ -367,7 +398,7 @@ struct ServiceTile: View {
                 .frame(width: logoSize, height: logoSize)
         } else {
             Text(fallback)
-                .font(.system(size: logoSize * 0.7, weight: .semibold))
+                .font(Theme.font(size: logoSize * 0.7, weight: .semibold))
                 .foregroundStyle(foreground)
         }
     }

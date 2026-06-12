@@ -26,10 +26,13 @@ struct NativeCodexAccount {
     var accessToken: String?
     var refreshToken: String?
     var idToken: String?
+    /// Set when this account came from the in-app OAuth login; token refreshes
+    /// then write back to ImportedAccountStore instead of auth.json.
+    var importedId: String?
 }
 
 struct NativeClaudeAccount {
-    enum Source { case file, keychain }
+    enum Source: Equatable { case file, keychain, imported(String) }
     var source: Source
     /// Which keychain service this came from, so refreshes write back to the right item.
     var keychainService: String?
@@ -142,6 +145,19 @@ enum ClaudeAuthReader {
                 }
                 add(account)
             }
+        }
+
+        for imported in ImportedAccountStore.loadAll() where imported.service == .claude {
+            guard let tokens = ImportedAccountStore.loadTokens(accountId: ImportedAccountStore.tokenKey(imported)) else { continue }
+            add(NativeClaudeAccount(
+                source: .imported(imported.id),
+                keychainService: nil,
+                email: imported.email,
+                subscriptionType: imported.planType,
+                expiresAt: parseExpiry(tokens.expiresAtMillis.map(Double.init)),
+                accessToken: tokens.accessToken,
+                refreshToken: tokens.refreshToken
+            ))
         }
 
         return accounts
