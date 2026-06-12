@@ -63,13 +63,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: GlassPanelController!
     private let store = QuotaStore()
     private var eventMonitor: Any?
+    private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = GlassPanelController(store: store)
         setupStatusItem()
         setupDismissMonitor()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSettings), name: .qgOpenSettings, object: nil
+        )
         if ProcessInfo.processInfo.environment["QG_SHOWPANEL"] != nil {
             Task { await store.refresh(); panel.showDebug() }
+        } else if ProcessInfo.processInfo.environment["QG_SHOWSETTINGS"] != nil {
+            Task { await store.refresh(); openSettings() }
         } else {
             Task { await store.refresh() }
         }
@@ -98,6 +104,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.panel.close()
             }
         }
+    }
+
+    @objc private func openSettings() {
+        panel.close()
+        if settingsWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "QuotaGlass 设置"
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: AliasSettingsView(store: store))
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func togglePanel() {

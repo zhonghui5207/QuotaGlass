@@ -17,7 +17,7 @@ private func accent(for snapshot: QuotaSnapshot) -> Color {
     return Color(red: 0.30, green: 0.50, blue: 0.86)
 }
 
-private func displayTitle(_ snapshot: QuotaSnapshot) -> String {
+func displayTitle(_ snapshot: QuotaSnapshot) -> String {
     snapshot.isClaude ? "Claude Code" : snapshot.serviceName
 }
 
@@ -31,6 +31,7 @@ private func logoName(_ snapshot: QuotaSnapshot) -> String {
 
 struct PopoverRootView: View {
     @ObservedObject var store: QuotaStore
+    @ObservedObject private var aliases = AliasStore.shared
     @State private var refreshRotation: Double = 0
 
     var body: some View {
@@ -80,7 +81,9 @@ struct PopoverRootView: View {
             }
             .buttonStyle(PopoverIconButtonStyle())
 
-            Button {} label: {
+            Button {
+                NotificationCenter.default.post(name: .qgOpenSettings, object: nil)
+            } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -203,7 +206,7 @@ private struct ServiceBlockView: View {
                     .kerning(-0.1)
                     .foregroundColor(.primary)
                 + Text("   ")
-                + Text(snapshot.displaySubtitle)
+                + Text(AliasStore.shared.alias(for: accountKey(snapshot)) ?? snapshot.displaySubtitle)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary.opacity(0.75))
             )
