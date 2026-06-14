@@ -66,30 +66,12 @@ struct PopoverRootView: View {
         // Soft per-glyph shadow keeps white text readable over light wallpaper
         // without any blur/material behind it.
         .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
-        // TOP layer — a clear glass pane: faint tint + top specular highlight + rim.
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.06))
-                .overlay(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.22), Color.clear],
-                        startPoint: .top, endPoint: .center
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.30), lineWidth: 1)
-                )
-        )
-        .padding(7)
-        // BOTTOM layer — real behind-window desktop blur (frosted backdrop) that
-        // frames the glass pane; the 7pt gap above lets this layer show through.
-        .background(VisualEffectView(material: .hudWindow, cornerRadius: 26, alpha: 0.95))
+        // Ghostty 等价 background-opacity ≈ 0.20：纯透明度垫底，无模糊。
+        .background(Color.black.opacity(0.20))
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
         )
     }
 
@@ -432,62 +414,6 @@ enum LogoCache {
               let image = NSImage(contentsOf: url) else { return nil }
         image.isTemplate = true
         cache.setObject(image, forKey: name as NSString)
-        return image
-    }
-}
-
-// MARK: - Liquid Glass top layer
-
-extension View {
-    /// Applies macOS 26 Liquid Glass over the (already blurred) backdrop, so the
-    /// glass pane has the frosted layer beneath it to refract. Falls back to a
-    /// rounded clip on older systems.
-    @ViewBuilder
-    func liquidGlass(cornerRadius: CGFloat) -> some View {
-        if #available(macOS 26.0, *) {
-            self.glassEffect(.regular.interactive(false), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        } else {
-            self.clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        }
-    }
-}
-
-// MARK: - Frosted blur layer
-
-/// Real behind-window gaussian blur of the desktop (the bottom glass layer).
-/// Rounded via a cap-inset mask image so the blur clips to the panel shape.
-struct VisualEffectView: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .hudWindow
-    var cornerRadius: CGFloat = 26
-    /// Lower alpha = more transparent (more wallpaper shows through, less milk).
-    var alpha: CGFloat = 0.6
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.isEmphasized = false
-        view.alphaValue = alpha
-        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        view.material = material
-        view.alphaValue = alpha
-        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
-    }
-
-    private static func maskImage(cornerRadius r: CGFloat) -> NSImage {
-        let edge = r * 2 + 1
-        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
-            NSColor.black.setFill()
-            NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
-            return true
-        }
-        image.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
-        image.resizingMode = .stretch
         return image
     }
 }
