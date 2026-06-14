@@ -66,8 +66,18 @@ struct PopoverRootView: View {
         // Soft per-glyph shadow keeps white text readable over light wallpaper
         // without any blur/material behind it.
         .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
-        // Ghostty 等价 background-opacity ≈ 0.20：纯透明度垫底，无模糊。
-        .background(Color.black.opacity(0.20))
+        // Two-layer glass: a real behind-window blur underneath, with a nearly
+        // clear glass sheet on top (faint white film + top specular highlight).
+        .background(
+            ZStack {
+                VisualEffectView(material: .hudWindow, cornerRadius: 26)
+                LinearGradient(
+                    colors: [Color.white.opacity(0.16), Color.white.opacity(0.04)],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            }
+        )
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -414,6 +424,42 @@ enum LogoCache {
               let image = NSImage(contentsOf: url) else { return nil }
         image.isTemplate = true
         cache.setObject(image, forKey: name as NSString)
+        return image
+    }
+}
+
+// MARK: - Frosted blur layer
+
+/// Real behind-window gaussian blur of the desktop (the bottom glass layer).
+/// Rounded via a cap-inset mask image so the blur clips to the panel shape.
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .hudWindow
+    var cornerRadius: CGFloat = 26
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = true
+        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
+    }
+
+    private static func maskImage(cornerRadius r: CGFloat) -> NSImage {
+        let edge = r * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
+        image.resizingMode = .stretch
         return image
     }
 }
