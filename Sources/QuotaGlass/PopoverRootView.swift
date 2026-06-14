@@ -70,10 +70,12 @@ struct PopoverRootView: View {
         // clear glass sheet on top (faint white film + top specular highlight).
         .background(
             ZStack {
-                VisualEffectView(material: .hudWindow, cornerRadius: 26)
+                // Bottom: light, transparent blur — wallpaper reads through.
+                VisualEffectView(material: .hudWindow, cornerRadius: 26, alpha: 0.8)
+                // Top: just a thin glass edge highlight, no full-panel milk film.
                 LinearGradient(
-                    colors: [Color.white.opacity(0.16), Color.white.opacity(0.04)],
-                    startPoint: .top, endPoint: .bottom
+                    colors: [Color.white.opacity(0.12), Color.clear],
+                    startPoint: .top, endPoint: .center
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
             }
@@ -435,19 +437,23 @@ enum LogoCache {
 struct VisualEffectView: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .hudWindow
     var cornerRadius: CGFloat = 26
+    /// Lower alpha = more transparent (more wallpaper shows through, less milk).
+    var alpha: CGFloat = 0.6
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = material
         view.blendingMode = .behindWindow
         view.state = .active
-        view.isEmphasized = true
+        view.isEmphasized = false
+        view.alphaValue = alpha
         view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
         return view
     }
 
     func updateNSView(_ view: NSVisualEffectView, context: Context) {
         view.material = material
+        view.alphaValue = alpha
         view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
     }
 
