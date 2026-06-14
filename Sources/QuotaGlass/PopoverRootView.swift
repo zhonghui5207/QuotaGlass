@@ -66,8 +66,8 @@ struct PopoverRootView: View {
         // Soft per-glyph shadow keeps white text readable over light wallpaper
         // without any blur/material behind it.
         .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
-        // Ghostty 等价 background-opacity ≈ 0.20：纯透明度垫底，无模糊。
-        .background(Color.black.opacity(0.20))
+        // Ghostty 等价 background-opacity ≈ 0.40：纯透明度垫底，无模糊。
+        .background(Color.black.opacity(0.40))
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
