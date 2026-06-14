@@ -56,23 +56,18 @@ struct PopoverRootView: View {
     @State private var refreshRotation: Double = 0
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             header
-            Rectangle().fill(Theme.divider).frame(height: 1)
+                .padding(.top, 12)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .glassCard()
             content
         }
-        .frame(width: 340)
+        .padding(12)
+        .frame(width: 360)
         .fixedSize(horizontal: false, vertical: true)
-        // Soft per-glyph shadow keeps white text readable over light wallpaper
-        // without any blur/material behind it.
-        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
-        // Ghostty 等价 background-opacity ≈ 0.20：纯透明度垫底，无模糊。
-        .background(Color.black.opacity(0.20))
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
-        )
     }
 
     // MARK: Header
@@ -166,12 +161,13 @@ struct PopoverRootView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 28)
         } else {
-            VStack(spacing: 0) {
-                ForEach(Array(orderedQuotas.enumerated()), id: \.element.id) { index, snapshot in
-                    if index > 0 {
-                        Rectangle().fill(Theme.divider).frame(height: 1).padding(.horizontal, 16)
-                    }
+            VStack(spacing: 10) {
+                ForEach(orderedQuotas) { snapshot in
                     ServiceBlockView(snapshot: snapshot)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .glassCard()
                 }
                 if case .failed(let message) = store.state {
                     Text(shortError(message))
@@ -180,7 +176,8 @@ struct PopoverRootView: View {
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 10)
+                        .padding(.vertical, 10)
+                        .glassCard()
                 }
             }
         }
@@ -219,9 +216,6 @@ private struct ServiceBlockView: View {
             bodyRow
             weeklyRow
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var headerRow: some View {
@@ -283,7 +277,7 @@ private struct ServiceBlockView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                ProgressBar(value: snapshot.fiveHourRemaining / 100, tint: fiveHourTint, height: 6)
+                ProgressBar(value: snapshot.fiveHourRemaining / 100, tint: fiveHourTint, height: 12)
 
                 HStack(spacing: 5) {
                     Text("重置")
@@ -308,7 +302,7 @@ private struct ServiceBlockView: View {
                 .foregroundStyle(Theme.textTertiary)
                 .frame(width: 36, alignment: .leading)
 
-            ProgressBar(value: snapshot.weeklyRemaining / 100, tint: weeklyTint, height: 2.5)
+            ProgressBar(value: snapshot.weeklyRemaining / 100, tint: weeklyTint, height: 6)
 
             Text("\(Int(snapshot.weeklyRemaining.rounded()))%")
                 .font(Theme.font(size: 10.5, weight: .medium))
@@ -415,6 +409,56 @@ enum LogoCache {
         image.isTemplate = true
         cache.setObject(image, forKey: name as NSString)
         return image
+    }
+}
+
+// MARK: - Frosted glass card (Control Center style)
+
+/// NSVisualEffectView behind-window blur — real frosted glass that samples the
+/// desktop. Rounded via a cap-inset mask image so corners clip the material.
+struct VisualEffectView: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .hudWindow
+    var cornerRadius: CGFloat = 20
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = true
+        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+        view.maskImage = Self.maskImage(cornerRadius: cornerRadius)
+    }
+
+    private static func maskImage(cornerRadius r: CGFloat) -> NSImage {
+        let edge = r * 2 + 1
+        let image = NSImage(size: NSSize(width: edge, height: edge), flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
+        image.resizingMode = .stretch
+        return image
+    }
+}
+
+extension View {
+    /// Wraps content as a floating Control-Center-style frosted glass card.
+    func glassCard(cornerRadius: CGFloat = 20) -> some View {
+        self
+            .background(VisualEffectView(cornerRadius: cornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
     }
 }
 

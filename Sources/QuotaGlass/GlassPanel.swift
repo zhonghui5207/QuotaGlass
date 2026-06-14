@@ -54,7 +54,7 @@ final class GlassPanelController {
     func show(relativeTo button: NSStatusBarButton) {
         hosting.layoutSubtreeIfNeeded()
         let fitting = hosting.fittingSize
-        let width: CGFloat = 340
+        let width: CGFloat = 360
         let height = max(120, fitting.height)
         panel.setContentSize(NSSize(width: width, height: height))
         glassContainer.frame = NSRect(x: 0, y: 0, width: width, height: height)
@@ -76,7 +76,7 @@ final class GlassPanelController {
     func showDebug() {
         hosting.layoutSubtreeIfNeeded()
         let fitting = hosting.fittingSize
-        let width: CGFloat = 340
+        let width: CGFloat = 360
         let height = max(120, fitting.height)
         panel.setContentSize(NSSize(width: width, height: height))
         glassContainer.frame = NSRect(x: 0, y: 0, width: width, height: height)
