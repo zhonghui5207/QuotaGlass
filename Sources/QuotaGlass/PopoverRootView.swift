@@ -66,24 +66,30 @@ struct PopoverRootView: View {
         // Soft per-glyph shadow keeps white text readable over light wallpaper
         // without any blur/material behind it.
         .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
-        // Two-layer glass: a real behind-window blur underneath, with a nearly
-        // clear glass sheet on top (faint white film + top specular highlight).
+        // TOP layer — a clear glass pane: faint tint + top specular highlight + rim.
         .background(
-            ZStack {
-                // Bottom: light, transparent blur — wallpaper reads through.
-                VisualEffectView(material: .hudWindow, cornerRadius: 26, alpha: 0.8)
-                // Top: just a thin glass edge highlight, no full-panel milk film.
-                LinearGradient(
-                    colors: [Color.white.opacity(0.12), Color.clear],
-                    startPoint: .top, endPoint: .center
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .overlay(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.22), Color.clear],
+                        startPoint: .top, endPoint: .center
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-            }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.30), lineWidth: 1)
+                )
         )
+        .padding(7)
+        // BOTTOM layer — real behind-window desktop blur (frosted backdrop) that
+        // frames the glass pane; the 7pt gap above lets this layer show through.
+        .background(VisualEffectView(material: .hudWindow, cornerRadius: 26, alpha: 0.95))
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.22), lineWidth: 1)
         )
     }
 
@@ -427,6 +433,22 @@ enum LogoCache {
         image.isTemplate = true
         cache.setObject(image, forKey: name as NSString)
         return image
+    }
+}
+
+// MARK: - Liquid Glass top layer
+
+extension View {
+    /// Applies macOS 26 Liquid Glass over the (already blurred) backdrop, so the
+    /// glass pane has the frosted layer beneath it to refract. Falls back to a
+    /// rounded clip on older systems.
+    @ViewBuilder
+    func liquidGlass(cornerRadius: CGFloat) -> some View {
+        if #available(macOS 26.0, *) {
+            self.glassEffect(.regular.interactive(false), in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            self.clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
     }
 }
 
