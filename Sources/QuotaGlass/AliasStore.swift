@@ -40,7 +40,11 @@ struct SettingsRootView: View {
     @ObservedObject var store: QuotaStore
     @ObservedObject private var aliases = AliasStore.shared
     @ObservedObject private var prefs = PrefsStore.shared
-    @State private var launchAtLogin = false
+    @State private var draftAliases: [String: String] = [:]
+    @State private var draftMenuBarShow: [String: Bool] = [:]
+    @State private var draftLaunchAtLogin = false
+    @State private var draftNotifyLowQuota = true
+    @State private var draftRefreshInterval = 300
     @State private var loginSheet: LoginSheet?
 
     enum LoginSheet: String, Identifiable {
@@ -49,57 +53,87 @@ struct SettingsRootView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 20) {
+                accountsSection
+                Divider()
+                generalSection
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+
+            Divider()
+
+            footer
+        }
+        .frame(width: 500)
+        .onAppear(perform: resetDrafts)
+        .sheet(item: $loginSheet) { sheet in
+            switch sheet {
+            case .claude: ClaudeLoginSheet(store: store)
+            case .codex: CodexLoginSheet(store: store)
+            }
+        }
+    }
+
+    private var accountsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text("账号")
                         .font(.system(size: 15, weight: .semibold))
-                    Spacer()
-                    Menu("添加账号") {
-                        Button("登录 Claude 账号…") { loginSheet = .claude }
-                        Button("登录 Codex 账号…") { loginSheet = .codex }
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
+                    Text("设置别名，并选择要显示在菜单栏徽章里的账号。")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
-                Text("别名用于列表展示；勾选「菜单栏」的账号会显示在菜单栏徽章里。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                Spacer()
+                Menu("添加账号") {
+                    Button("登录 Claude 账号…") { loginSheet = .claude }
+                    Button("登录 Codex 账号…") { loginSheet = .codex }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
 
             if store.quotas.isEmpty {
                 Text("还没有读到账号。")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 10)
             } else {
-                ForEach(store.quotas) { snapshot in
-                    row(for: snapshot)
+                VStack(spacing: 0) {
+                    ForEach(Array(store.quotas.enumerated()), id: \.element.id) { index, snapshot in
+                        if index > 0 { Divider().padding(.leading, 2) }
+                        row(for: snapshot)
+                            .padding(.vertical, 9)
+                    }
                 }
             }
+        }
+    }
 
-            Divider()
-
+    private var generalSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
             Text("通用")
                 .font(.system(size: 15, weight: .semibold))
 
-            Toggle("开机自启", isOn: Binding(
-                get: { launchAtLogin },
-                set: { on in
-                    prefs.setLaunchAtLogin(on)
-                    launchAtLogin = prefs.launchAtLogin
-                }
-            ))
-            .toggleStyle(.switch)
-            .controlSize(.small)
-
-            Toggle("低额度通知（5 小时窗口剩余 <30% 和 <10% 时各提醒一次）", isOn: $prefs.notifyLowQuota)
-                .toggleStyle(.switch)
-                .controlSize(.small)
+            HStack {
+                Toggle("开机自启", isOn: $draftLaunchAtLogin)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                Spacer()
+                Toggle("低额度通知", isOn: $draftNotifyLowQuota)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .help("5 小时窗口剩余 <30% 和 <10% 时各提醒一次")
+            }
 
             HStack(spacing: 12) {
                 Text("后台刷新间隔")
                     .font(.system(size: 13))
-                Picker("", selection: $prefs.refreshInterval) {
+                Picker("", selection: $draftRefreshInterval) {
                     Text("5 分钟").tag(300)
                     Text("10 分钟").tag(600)
                     Text("15 分钟").tag(900)
@@ -109,15 +143,22 @@ struct SettingsRootView: View {
                 .frame(width: 220)
             }
         }
-        .padding(20)
-        .frame(width: 460)
-        .onAppear { launchAtLogin = prefs.launchAtLogin }
-        .sheet(item: $loginSheet) { sheet in
-            switch sheet {
-            case .claude: ClaudeLoginSheet(store: store)
-            case .codex: CodexLoginSheet(store: store)
-            }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Text(hasChanges ? "有未保存更改" : "设置已保存")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("还原", action: resetDrafts)
+                .disabled(!hasChanges)
+            Button("保存", action: saveDrafts)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!hasChanges)
         }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
     }
 
     private func row(for snapshot: QuotaSnapshot) -> some View {
@@ -142,10 +183,10 @@ struct SettingsRootView: View {
                     .lineLimit(1)
             }
             Spacer()
-            TextField("别名", text: aliasBinding(for: key))
+            TextField("别名", text: aliasDraftBinding(for: key))
                 .textFieldStyle(.roundedBorder)
-                .frame(width: 130)
-            Toggle("菜单栏", isOn: menuBarBinding(for: key))
+                .frame(width: 150)
+            Toggle("菜单栏", isOn: menuBarDraftBinding(for: key))
                 .toggleStyle(.checkbox)
             if let importedId = snapshot.importedId {
                 Button {
@@ -168,17 +209,80 @@ struct SettingsRootView: View {
         Task { await store.refresh() }
     }
 
-    private func aliasBinding(for key: String) -> Binding<String> {
+    private func aliasDraftBinding(for key: String) -> Binding<String> {
         Binding(
-            get: { aliases.alias(for: key) ?? "" },
-            set: { aliases.setAlias($0, for: key) }
+            get: { draftAliases[key] ?? "" },
+            set: { draftAliases[key] = $0 }
         )
     }
 
-    private func menuBarBinding(for key: String) -> Binding<Bool> {
+    private func menuBarDraftBinding(for key: String) -> Binding<Bool> {
         Binding(
-            get: { prefs.menuBarShow[key] ?? defaultMenuBarKeys(store.quotas).contains(key) },
-            set: { prefs.menuBarShow[key] = $0 }
+            get: { draftMenuBarShow[key] ?? currentMenuBarValue(for: key) },
+            set: { draftMenuBarShow[key] = $0 }
         )
+    }
+
+    private var hasChanges: Bool {
+        if draftLaunchAtLogin != prefs.launchAtLogin { return true }
+        if draftNotifyLowQuota != prefs.notifyLowQuota { return true }
+        if draftRefreshInterval != prefs.refreshInterval { return true }
+
+        for snapshot in store.quotas {
+            let key = accountKey(snapshot)
+            if normalized(draftAliases[key] ?? "") != normalized(aliases.alias(for: key) ?? "") {
+                return true
+            }
+            if (draftMenuBarShow[key] ?? currentMenuBarValue(for: key)) != currentMenuBarValue(for: key) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func resetDrafts() {
+        draftAliases = Dictionary(uniqueKeysWithValues: store.quotas.map { snapshot in
+            let key = accountKey(snapshot)
+            return (key, aliases.alias(for: key) ?? "")
+        })
+        draftMenuBarShow = Dictionary(uniqueKeysWithValues: store.quotas.map { snapshot in
+            let key = accountKey(snapshot)
+            return (key, currentMenuBarValue(for: key))
+        })
+        draftLaunchAtLogin = prefs.launchAtLogin
+        draftNotifyLowQuota = prefs.notifyLowQuota
+        draftRefreshInterval = prefs.refreshInterval
+    }
+
+    private func saveDrafts() {
+        for snapshot in store.quotas {
+            let key = accountKey(snapshot)
+            aliases.setAlias(draftAliases[key] ?? "", for: key)
+        }
+
+        var nextMenuBarShow = prefs.menuBarShow
+        let defaults = defaultMenuBarKeys(store.quotas)
+        for snapshot in store.quotas {
+            let key = accountKey(snapshot)
+            let draftValue = draftMenuBarShow[key] ?? defaults.contains(key)
+            if draftValue == defaults.contains(key) {
+                nextMenuBarShow.removeValue(forKey: key)
+            } else {
+                nextMenuBarShow[key] = draftValue
+            }
+        }
+        prefs.menuBarShow = nextMenuBarShow
+        prefs.notifyLowQuota = draftNotifyLowQuota
+        prefs.refreshInterval = draftRefreshInterval
+        prefs.setLaunchAtLogin(draftLaunchAtLogin)
+        resetDrafts()
+    }
+
+    private func currentMenuBarValue(for key: String) -> Bool {
+        prefs.menuBarShow[key] ?? defaultMenuBarKeys(store.quotas).contains(key)
+    }
+
+    private func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

@@ -20,12 +20,23 @@ final class GlassPanelController {
         host.autoresizingMask = [.width, .height]
         self.hosting = host
 
-        // Ghostty-style alignment (background-opacity 0, blur off): zero blur,
-        // zero material — the content floats directly over the desktop. The
-        // rounded outline is drawn by the SwiftUI root view.
-        let container = NSView()
-        host.frame = container.bounds
-        container.addSubview(host)
+        let container: NSView
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.style = .clear
+            glass.cornerRadius = 28
+            glass.tintColor = nil
+            glass.contentView = host
+            container = glass
+        } else {
+            let visual = NSVisualEffectView()
+            visual.material = .popover
+            visual.blendingMode = .behindWindow
+            visual.state = .active
+            host.frame = visual.bounds
+            visual.addSubview(host)
+            container = visual
+        }
         self.glassContainer = container
 
         panel = NSPanel(
@@ -36,9 +47,7 @@ final class GlassPanelController {
         )
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        // No slab shadow — a fully transparent panel with a shadow reads as a
-        // ghostly rectangle over the wallpaper.
-        panel.hasShadow = false
+        panel.hasShadow = true
         panel.level = .popUpMenu
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false

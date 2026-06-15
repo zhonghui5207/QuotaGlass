@@ -1,18 +1,16 @@
 import SwiftUI
 import AppKit
 
-// Layout and visuals replicate the cc-bar popover 1:1 (github.com/nanvon/cc-bar),
-// adapted to QuotaGlass's local usage-checker data source.
+// Liquid Glass popover tuned for a native macOS menu-bar utility.
 
 // MARK: - Theme
-// Clear Liquid Glass look: monochrome white vibrancy over a dimming layer,
-// color reserved exclusively for low-quota warnings.
+// Monochrome vibrancy with color reserved for low-quota warnings.
 
 enum Theme {
-    static let textPrimary = Color.white
-    static let textSecondary = Color.white.opacity(0.65)
-    static let textTertiary = Color.white.opacity(0.42)
-    static let divider = Color.white.opacity(0.14)
+    static let textPrimary = Color.white.opacity(0.92)
+    static let textSecondary = Color.white.opacity(0.58)
+    static let textTertiary = Color.white.opacity(0.36)
+    static let divider = Color.white.opacity(0.10)
     static let barTrack = Color.white.opacity(0.12)
 
     /// White normally; orange under 30% remaining, red under 10%.
@@ -22,19 +20,8 @@ enum Theme {
         return .white
     }
 
-    /// JetBrainsMono Nerd Font (Ghostty alignment; base style Medium), with a
-    /// system-font fallback when the font isn't installed.
     static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        let name: String
-        switch weight {
-        case .bold, .heavy, .black: name = "JetBrainsMonoNF-Bold"
-        case .semibold: name = "JetBrainsMonoNF-SemiBold"
-        default: name = "JetBrainsMonoNF-Medium"
-        }
-        guard NSFont(name: name, size: size) != nil else {
-            return .system(size: size, weight: weight)
-        }
-        return .custom(name, size: size)
+        .system(size: size, weight: weight, design: .default)
     }
 }
 
@@ -58,30 +45,55 @@ struct PopoverRootView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Rectangle().fill(Theme.divider).frame(height: 1)
+            GlassHairline()
             content
         }
         .frame(width: 340)
         .fixedSize(horizontal: false, vertical: true)
-        // Soft per-glyph shadow keeps white text readable over light wallpaper
-        // without any blur/material behind it.
-        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 1)
-        // Ghostty 等价 background-opacity ≈ 0.40：纯透明度垫底，无模糊。
-        .background(Color.black.opacity(0.40))
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .background(panelBacking)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.25), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.34),
+                            Color.white.opacity(0.10),
+                            Color.white.opacity(0.03)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
+        .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
+        .shadow(color: .black.opacity(0.20), radius: 1, y: 1)
+    }
+
+    private var panelBacking: some View {
+        RoundedRectangle(cornerRadius: 28, style: .continuous)
+            .fill(fallbackBacking)
+            .overlay {
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color.black.opacity(0.075))
+            }
+    }
+
+    private var fallbackBacking: Color {
+        if #available(macOS 26.0, *) {
+            return Color.clear
+        }
+        return Color.black.opacity(0.22)
     }
 
     // MARK: Header
 
     private var header: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             VStack(alignment: .leading, spacing: 1) {
                 Text("用量")
-                    .font(Theme.font(size: 13, weight: .semibold))
+                    .font(Theme.font(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
                 Text(subtitle)
                     .font(Theme.font(size: 11))
@@ -91,11 +103,6 @@ struct PopoverRootView: View {
             }
 
             Spacer()
-
-            Image(systemName: "drop.fill")
-                .font(.system(size: 9))
-                .foregroundStyle(statusColor)
-                .padding(.trailing, 4)
 
             Button(action: refresh) {
                 Image(systemName: "arrow.clockwise")
@@ -122,9 +129,9 @@ struct PopoverRootView: View {
             }
             .buttonStyle(PopoverIconButtonStyle())
         }
-        .padding(.top, 14)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        .padding(.top, 15)
+        .padding(.horizontal, 13)
+        .padding(.bottom, 10)
     }
 
     private var subtitle: String {
@@ -138,15 +145,6 @@ struct PopoverRootView: View {
         return "\(age) 前已刷新"
     }
 
-    private var statusColor: Color {
-        switch store.state {
-        case .loaded: Color.white.opacity(0.9)
-        case .loading: Color.white.opacity(0.9)
-        case .failed: .orange
-        case .idle: Theme.textTertiary
-        }
-    }
-
     private func refresh() {
         refreshRotation += 360
         Task { await store.refresh() }
@@ -157,7 +155,7 @@ struct PopoverRootView: View {
     @ViewBuilder
     private var content: some View {
         if store.quotas.isEmpty && store.state == .loading {
-            VStack(spacing: 8) {
+            VStack(spacing: 7) {
                 ProgressView()
                 Text("正在读取用量…")
                     .font(Theme.font(size: 12))
@@ -169,7 +167,9 @@ struct PopoverRootView: View {
             VStack(spacing: 0) {
                 ForEach(Array(orderedQuotas.enumerated()), id: \.element.id) { index, snapshot in
                     if index > 0 {
-                        Rectangle().fill(Theme.divider).frame(height: 1).padding(.horizontal, 16)
+                        GlassHairline()
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 3)
                     }
                     ServiceBlockView(snapshot: snapshot)
                 }
@@ -183,6 +183,8 @@ struct PopoverRootView: View {
                         .padding(.bottom, 10)
                 }
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
         }
     }
 
@@ -214,13 +216,13 @@ private struct ServiceBlockView: View {
     private var weeklyTint: Color { Theme.tint(remaining: snapshot.weeklyRemaining) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             headerRow
             bodyRow
             weeklyRow
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -231,7 +233,6 @@ private struct ServiceBlockView: View {
             (
                 Text(displayTitle(snapshot))
                     .font(Theme.font(size: 13, weight: .semibold))
-                    .kerning(-0.1)
                     .foregroundColor(Theme.textPrimary)
                 + Text("   ")
                 + Text(AliasStore.shared.alias(for: accountKey(snapshot)) ?? snapshot.displaySubtitle)
@@ -248,26 +249,16 @@ private struct ServiceBlockView: View {
                     .font(Theme.font(size: 9))
                     .foregroundStyle(.orange)
             }
-            // QuotaGlass signature: a droplet, tinted by quota tier
-            // (white = healthy, orange = <30%, red = <10%), orange when stale.
-            Image(systemName: "drop.fill")
-                .font(.system(size: 8))
-                .foregroundStyle(
-                    snapshot.isStale
-                        ? Color.orange
-                        : Theme.tint(remaining: snapshot.fiveHourRemaining).opacity(0.9)
-                )
         }
     }
 
     private var bodyRow: some View {
-        HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .center, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
                     Text("\(Int(snapshot.fiveHourRemaining.rounded()))")
-                        .font(Theme.font(size: 32, weight: .semibold))
+                        .font(Theme.font(size: 31, weight: .semibold))
                         .monospacedDigit()
-                        .kerning(-0.8)
                         .foregroundStyle(fiveHourTint)
                         .lineLimit(1)
                     Text("%")
@@ -277,10 +268,12 @@ private struct ServiceBlockView: View {
                 .fixedSize()
 
                 Text("5-HOUR · 五小时")
-                    .font(Theme.font(size: 9, weight: .semibold))
-                    .kerning(0.5)
+                    .font(Theme.font(size: 8.5, weight: .semibold))
                     .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.86)
             }
+            .frame(width: 82, alignment: .center)
 
             VStack(alignment: .leading, spacing: 8) {
                 ProgressBar(value: snapshot.fiveHourRemaining / 100, tint: fiveHourTint, height: 6)
@@ -336,16 +329,29 @@ struct ProgressBar: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Theme.barTrack)
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5))
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(Color.white.opacity(0.20), lineWidth: 0.5)
+                    )
                 Capsule()
                     .fill(
-                        // Lit-from-above glass tube: bright top edge, translucent body.
                         LinearGradient(
-                            colors: [tint.opacity(0.95), tint.opacity(0.55)],
-                            startPoint: .top, endPoint: .bottom
+                            colors: [
+                                Color.white.opacity(0.22),
+                                tint.opacity(0.76),
+                                tint.opacity(0.48)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
                         )
                     )
                     .frame(width: max(height, proxy.size.width * clamped))
+                    .overlay(alignment: .top) {
+                        Capsule()
+                            .fill(Color.white.opacity(0.12))
+                            .frame(height: max(1, height * 0.26))
+                            .padding(.horizontal, 1)
+                    }
             }
         }
         .frame(height: height)
@@ -354,14 +360,14 @@ struct ProgressBar: View {
     private var clamped: CGFloat { max(0, min(1, CGFloat(value))) }
 }
 
-// MARK: - ServiceTile (cc-bar)
+// MARK: - ServiceTile
 
 struct ServiceTile: View {
     let logoName: String
     let fallback: String
-    var size: CGFloat = 22
+    var size: CGFloat = 24
     var logoSize: CGFloat = 14
-    var cornerRadius: CGFloat = 6
+    var cornerRadius: CGFloat = 7
 
     /// Brand tiles: OpenAI black-on-white, Claude white-on-terracotta (#D97757).
     private static let claudeBrand = Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255)
@@ -380,11 +386,13 @@ struct ServiceTile: View {
             .fill(background)
             .frame(width: size, height: size)
             .overlay {
-                if isOpenAIBrand {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5)
-                }
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        isOpenAIBrand ? Color.black.opacity(0.13) : Color.white.opacity(0.18),
+                        lineWidth: 0.5
+                    )
             }
+            .shadow(color: .black.opacity(0.16), radius: 3, y: 1)
             .overlay(logoView)
     }
 
@@ -418,6 +426,22 @@ enum LogoCache {
     }
 }
 
+private struct GlassHairline: View {
+    var body: some View {
+        LinearGradient(
+            colors: [
+                Color.white.opacity(0),
+                Theme.divider,
+                Color.white.opacity(0)
+            ],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+        .frame(height: 1)
+        .padding(.horizontal, 14)
+    }
+}
+
 // MARK: - Liquid Glass container
 
 /// Wraps content in Apple's transparent Liquid Glass (macOS 26+), falling back
@@ -428,7 +452,7 @@ struct GlassContainer<Content: View>: View {
 
     var body: some View {
         if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            content.glassEffect(.clear, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         } else {
             content.background(
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -438,7 +462,7 @@ struct GlassContainer<Content: View>: View {
     }
 }
 
-// MARK: - Icon button style (cc-bar)
+// MARK: - Icon button style
 
 struct PopoverIconButtonStyle: ButtonStyle {
     @State private var hovering = false
@@ -446,10 +470,17 @@ struct PopoverIconButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .frame(width: 26, height: 22)
+            .frame(width: 27, height: 24)
             .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(hovering && isEnabled ? Color.white.opacity(0.12) : .clear)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(hovering && isEnabled ? Color.white.opacity(0.10) : Color.clear)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(
+                                Color.white.opacity(hovering && isEnabled ? 0.14 : 0),
+                                lineWidth: 0.5
+                            )
+                    }
             )
             .opacity(configuration.isPressed ? 0.5 : 1)
             .contentShape(Rectangle())
