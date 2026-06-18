@@ -5,8 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP="$ROOT/build/QuotaGlass.app"
 ZIP="$ROOT/build/QuotaGlass.app.zip"
 MACOS="$APP/Contents/MacOS"
-VERSION="${VERSION:-0.2.1}"
-BUNDLE_VERSION="${BUNDLE_VERSION:-2}"
+ICONSET="$ROOT/build/QuotaGlass.iconset"
+ICON="$APP/Contents/Resources/QuotaGlass.icns"
+VERSION="${VERSION:-0.2.2}"
+BUNDLE_VERSION="${BUNDLE_VERSION:-3}"
 
 cd "$ROOT"
 swift build -c release
@@ -17,6 +19,9 @@ cp "$ROOT/.build/release/QuotaGlass" "$MACOS/QuotaGlass"
 # Bundle.module fatalErrors at runtime if the SPM resource bundle is missing.
 cp -R "$ROOT/.build/release/QuotaGlass_QuotaGlass.bundle" "$APP/Contents/Resources/"
 
+swift "$ROOT/scripts/make_icon.swift" "$ICONSET"
+iconutil -c icns "$ICONSET" -o "$ICON"
+
 for logo in codex claude; do
   logo_path="$APP/Contents/Resources/QuotaGlass_QuotaGlass.bundle/$logo.svg"
   if [[ ! -s "$logo_path" ]]; then
@@ -24,6 +29,10 @@ for logo in codex claude; do
     exit 1
   fi
 done
+if [[ ! -s "$ICON" ]]; then
+  printf 'Missing bundled app icon: %s\n' "$ICON" >&2
+  exit 1
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +46,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key>
   <string>QuotaGlass</string>
   <key>CFBundleDisplayName</key>
+  <string>QuotaGlass</string>
+  <key>CFBundleIconFile</key>
   <string>QuotaGlass</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
