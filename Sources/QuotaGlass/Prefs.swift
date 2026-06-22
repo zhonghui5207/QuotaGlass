@@ -7,11 +7,12 @@ extension Notification.Name {
 }
 
 /// Accounts shown in the menu bar when the user has not configured anything:
-/// the first Codex account plus the first Claude account.
+/// the first Codex, Claude, and Sakana API account.
 func defaultMenuBarKeys(_ quotas: [QuotaSnapshot]) -> Set<String> {
     var keys = Set<String>()
     if let codex = quotas.first(where: { $0.isCodex }) { keys.insert(accountKey(codex)) }
     if let claude = quotas.first(where: { $0.isClaude }) { keys.insert(accountKey(claude)) }
+    if let sakana = quotas.first(where: { $0.isSakana }) { keys.insert(accountKey(sakana)) }
     return keys
 }
 
@@ -84,6 +85,7 @@ final class QuotaNotifier {
     func evaluate(_ quotas: [QuotaSnapshot]) {
         guard PrefsStore.shared.notifyLowQuota, Self.available else { return }
         for quota in quotas where !quota.isStale {
+            if quota.isAPIUsage { continue }
             let key = accountKey(quota)
             let remaining = quota.fiveHourRemaining
             if remaining >= 35 {

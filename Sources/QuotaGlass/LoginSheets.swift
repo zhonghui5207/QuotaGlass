@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WebKit
 
 // Sheets for the in-app OAuth "add account" flows, presented from settings.
 
@@ -158,6 +159,182 @@ struct CodexLoginSheet: View {
                     errorText = error.localizedDescription
                     statusText = "登录失败"
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Sakana (in-app console session)
+
+struct SakanaLoginSheet: View {
+    let store: QuotaStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var pastedLoginURL = ""
+    @State private var requestedURL: URL?
+    @State private var statusRequest = 0
+    @State private var saveRequest = 0
+    @State private var statusText = "尚未检查登录状态"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("登录 Sakana Console")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Google 登录可能会被内嵌浏览器拒绝；推荐用邮箱登录，把邮件里的登录链接粘贴到这里打开。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    Button("取消") { dismiss() }
+                    Button("完成") {
+                        statusText = "正在保存页面用量…"
+                        saveRequest += 1
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+
+                HStack(spacing: 8) {
+                    TextField("粘贴 Sakana 登录邮件里的链接", text: $pastedLoginURL)
+                        .textFieldStyle(.roundedBorder)
+                    Button("从剪贴板打开") {
+                        openClipboardLoginURL()
+                    }
+                    Button("打开链接") {
+                        openPastedLoginURL()
+                    }
+                    .disabled(pastedLoginURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("回到 Billing") {
+                        requestedURL = URL(string: "https://console.sakana.ai/billing?tab=payAsYouGo")
+                    }
+                    Button("检查状态") {
+                        statusText = "正在检查…"
+                        statusRequest += 1
+                    }
+                }
+
+                Text(statusText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(14)
+
+            Divider()
+
+            SakanaWebView(
+                url: URL(string: "https://console.sakana.ai/billing?tab=payAsYouGo")!,
+                requestedURL: $requestedURL,
+                statusRequest: $statusRequest,
+                saveRequest: $saveRequest,
+                statusText: $statusText,
+                onFinish: {
+                    dismiss()
+                    Task { await store.refresh() }
+                }
+            )
+                .frame(width: 920, height: 680)
+        }
+    }
+
+    private func openPastedLoginURL() {
+        let raw = pastedLoginURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw), ["http", "https"].contains(url.scheme?.lowercased()) else { return }
+        requestedURL = url
+    }
+
+    private func openClipboardLoginURL() {
+        guard let raw = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: raw),
+              ["http", "https"].contains(url.scheme?.lowercased()) else { return }
+        pastedLoginURL = raw
+        requestedURL = url
+    }
+}
+
+private struct SakanaWebView: NSViewRepresentable {
+    let url: URL
+    @Binding var requestedURL: URL?
+    @Binding var statusRequest: Int
+    @Binding var saveRequest: Int
+    @Binding var statusText: String
+    let onFinish: () -> Void
+
+    final class Coordinator {
+        weak var webView: WKWebView?
+        var lastLoadedRequest: URL?
+        var lastStatusRequest = 0
+        var lastSaveRequest = 0
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let webView = WKWebView(frame: .zero, configuration: config)
+        context.coordinator.webView = webView
+        context.coordinator.lastLoadedRequest = url
+        webView.load(URLRequest(url: url))
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        if let requestedURL, context.coordinator.lastLoadedRequest != requestedURL {
+            context.coordinator.lastLoadedRequest = requestedURL
+            webView.load(URLRequest(url: requestedURL))
+        } else if webView.url == nil {
+            context.coordinator.lastLoadedRequest = url
+            webView.load(URLRequest(url: url))
+        }
+
+        if context.coordinator.lastStatusRequest != statusRequest {
+            context.coordinator.lastStatusRequest = statusRequest
+            updateStatus(from: webView)
+        }
+
+        if context.coordinator.lastSaveRequest != saveRequest {
+            context.coordinator.lastSaveRequest = saveRequest
+            saveVisibleBilling(from: webView)
+        }
+    }
+
+    private func updateStatus(from webView: WKWebView) {
+        let currentURL = webView.url?.absoluteString ?? "about:blank"
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+            let sharedCookies = SakanaConsoleSession.sharedStorageCookies()
+            let relevant = SakanaConsoleSession.relevantCookies(from: SakanaConsoleSession.deduplicate(cookies + sharedCookies))
+            let names = relevant.map(\.name).sorted().joined(separator: ", ")
+            let cookieText = relevant.isEmpty ? "无 Sakana cookie" : "\(relevant.count) 个 Sakana cookie: \(names)"
+            webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, _ in
+                let parsed = (value as? String).flatMap(SakanaUsage.parseConsoleBilling)
+                let parseText = parsed.map { "可解析：\($0.primaryText)，\($0.secondaryText ?? "Weekly 已读取")" } ?? "未解析到页面用量"
+                DispatchQueue.main.async {
+                    statusText = "当前页：\(currentURL)；WebKit \(cookies.count)，共享 \(sharedCookies.count)；\(cookieText)；\(parseText)"
+                }
+            }
+        }
+    }
+
+    private func saveVisibleBilling(from webView: WKWebView) {
+        webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, error in
+            let text = value as? String ?? ""
+            DispatchQueue.main.async {
+                if let error {
+                    statusText = "读取页面失败：\(error.localizedDescription)"
+                    return
+                }
+                guard let usage = SakanaUsage.parseConsoleBilling(text) else {
+                    statusText = "没能从当前页面解析到用量，请确认 Billing 页已经显示 Usage limit。"
+                    return
+                }
+                SakanaUsageCache.save(usage)
+                statusText = "已保存：\(usage.primaryText)，\(usage.secondaryText ?? "Weekly 已读取")"
+                onFinish()
             }
         }
     }

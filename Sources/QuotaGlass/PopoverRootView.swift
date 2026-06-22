@@ -26,12 +26,14 @@ enum Theme {
 }
 
 func displayTitle(_ snapshot: QuotaSnapshot) -> String {
-    snapshot.isClaude ? "Claude Code" : snapshot.serviceName
+    if snapshot.isSakana { return "Sakana API" }
+    return snapshot.isClaude ? "Claude Code" : snapshot.serviceName
 }
 
 private func logoName(_ snapshot: QuotaSnapshot) -> String {
     if snapshot.isClaude { return "claude" }
     if snapshot.isCodex { return "codex" }
+    if snapshot.isSakana { return "sakana" }
     return ""
 }
 
@@ -199,7 +201,8 @@ struct PopoverRootView: View {
         func rank(_ s: QuotaSnapshot) -> Int {
             if s.isCodex { return 0 }
             if s.isClaude { return 1 }
-            return 2
+            if s.isSakana { return 2 }
+            return 3
         }
         return store.quotas.enumerated().sorted { a, b in
             rank(a.element) != rank(b.element) ? rank(a.element) < rank(b.element) : a.offset < b.offset
@@ -218,8 +221,16 @@ private struct ServiceBlockView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             headerRow
-            bodyRow
-            weeklyRow
+            if shouldUseQuotaLayout {
+                bodyRow
+                weeklyRow
+            } else {
+                apiBodyRow
+                if hasWindowData {
+                    apiQuotaRow(label: "5H", remaining: snapshot.fiveHourRemaining, reset: snapshot.fiveHourReset, tint: fiveHourTint)
+                    apiQuotaRow(label: "WK", remaining: snapshot.weeklyRemaining, reset: snapshot.weeklyReset, tint: weeklyTint)
+                }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 11)
@@ -315,6 +326,70 @@ private struct ServiceBlockView: View {
         }
     }
 
+    private var apiBodyRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .center, spacing: 4) {
+                Text(snapshot.apiPrimaryText ?? "API")
+                    .font(Theme.font(size: 22, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .frame(width: 94)
+
+                Text("API · 用量")
+                    .font(Theme.font(size: 8.5, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+            }
+            .frame(width: 94, alignment: .center)
+
+            VStack(alignment: .leading, spacing: 6) {
+                if let secondary = snapshot.apiSecondaryText, !secondary.isEmpty {
+                    Text(secondary)
+                        .font(Theme.font(size: 12, weight: .medium))
+                        .foregroundStyle(Theme.textPrimary)
+                        .lineLimit(1)
+                }
+                if let detail = snapshot.apiDetailText, !detail.isEmpty {
+                    Text(detail)
+                        .font(Theme.font(size: 10.5))
+                        .foregroundStyle(Theme.textTertiary)
+                        .lineLimit(2)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var hasWindowData: Bool {
+        snapshot.fiveHourReset != "无" || snapshot.weeklyReset != "无" || snapshot.fiveHourUsed > 0 || snapshot.weeklyUsed > 0
+    }
+
+    private var shouldUseQuotaLayout: Bool {
+        !snapshot.isAPIUsage || hasWindowData
+    }
+
+    private func apiQuotaRow(label: String, remaining: Double, reset: String, tint: Color) -> some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(Theme.font(size: 9, weight: .semibold))
+                .foregroundStyle(Theme.textTertiary)
+                .frame(width: 36, alignment: .leading)
+
+            ProgressBar(value: remaining / 100, tint: tint, height: 2.5)
+
+            Text("\(Int(remaining.rounded()))%")
+                .font(Theme.font(size: 10.5, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+
+            Text(reset)
+                .font(Theme.font(size: 10.5))
+                .foregroundStyle(Theme.textTertiary)
+                .lineLimit(1)
+        }
+    }
+
 }
 
 // MARK: - ProgressBar (cc-bar)
@@ -369,17 +444,24 @@ struct ServiceTile: View {
     var logoSize: CGFloat = 14
     var cornerRadius: CGFloat = 7
 
-    /// Brand tiles: OpenAI black-on-white, Claude white-on-terracotta (#D97757).
+    /// Brand tiles: OpenAI black-on-white, Claude white-on-terracotta (#D97757), Sakana red-on-white.
     private static let claudeBrand = Color(red: 0xD9 / 255, green: 0x77 / 255, blue: 0x57 / 255)
+    private static let sakanaBrand = Color(red: 0xEA / 255, green: 0x20 / 255, blue: 0x12 / 255)
 
     private var isOpenAIBrand: Bool { logoName == "codex" }
     private var isClaudeBrand: Bool { logoName == "claude" }
+    private var isSakanaBrand: Bool { logoName == "sakana" }
     private var background: Color {
-        if isOpenAIBrand { return .white }
+        if isOpenAIBrand || isSakanaBrand { return .white }
         if isClaudeBrand { return Self.claudeBrand }
         return Color.white.opacity(0.14)
     }
-    private var foreground: Color { isOpenAIBrand ? .black : .white }
+    private var foreground: Color {
+        if isOpenAIBrand { return .black }
+        if isSakanaBrand { return Self.sakanaBrand }
+        return .white
+    }
+    private var effectiveLogoSize: CGFloat { isSakanaBrand ? logoSize + 3 : logoSize }
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -388,7 +470,7 @@ struct ServiceTile: View {
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
-                        isOpenAIBrand ? Color.black.opacity(0.13) : Color.white.opacity(0.18),
+                        (isOpenAIBrand || isSakanaBrand) ? Color.black.opacity(0.13) : Color.white.opacity(0.18),
                         lineWidth: 0.5
                     )
             }
@@ -403,7 +485,7 @@ struct ServiceTile: View {
                 .resizable()
                 .renderingMode(.template)
                 .foregroundStyle(foreground)
-                .frame(width: logoSize, height: logoSize)
+                .frame(width: effectiveLogoSize, height: effectiveLogoSize)
         } else {
             Text(fallback)
                 .font(Theme.font(size: logoSize * 0.7, weight: .semibold))

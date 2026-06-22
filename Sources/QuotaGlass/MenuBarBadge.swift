@@ -63,16 +63,42 @@ private struct BadgeView: View {
 
     private func segment(_ snapshot: QuotaSnapshot) -> some View {
         HStack(spacing: 3) {
-            logoImage(snapshot.isCodex ? "codex" : snapshot.isClaude ? "claude" : "")
+            serviceMark(snapshot)
             if let initial = initials[snapshot.id] {
                 Text(initial)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.black)
             }
-            Text("\(Int(snapshot.fiveHourRemaining.rounded()))%")
+            Text(badgeText(for: snapshot))
                 .font(.system(size: 12, weight: .regular))
                 .monospacedDigit()
                 .foregroundStyle(.black)
+        }
+    }
+
+    private func badgeText(for snapshot: QuotaSnapshot) -> String {
+        if snapshot.isAPIUsage {
+            if hasWindowData(snapshot) {
+                return "\(Int(snapshot.fiveHourRemaining.rounded()))%"
+            }
+            let text = snapshot.apiPrimaryText ?? "API"
+            return text == "API key OK" ? "API" : text
+        }
+        return "\(Int(snapshot.fiveHourRemaining.rounded()))%"
+    }
+
+    private func hasWindowData(_ snapshot: QuotaSnapshot) -> Bool {
+        snapshot.fiveHourReset != "无" || snapshot.weeklyReset != "无" || snapshot.fiveHourUsed > 0 || snapshot.weeklyUsed > 0
+    }
+
+    @ViewBuilder
+    private func serviceMark(_ snapshot: QuotaSnapshot) -> some View {
+        if snapshot.isCodex {
+            logoImage("codex")
+        } else if snapshot.isClaude {
+            logoImage("claude")
+        } else if snapshot.isSakana {
+            logoImage("sakana")
         }
     }
 

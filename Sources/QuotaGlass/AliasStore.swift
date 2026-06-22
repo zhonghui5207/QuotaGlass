@@ -48,7 +48,7 @@ struct SettingsRootView: View {
     @State private var loginSheet: LoginSheet?
 
     enum LoginSheet: String, Identifiable {
-        case claude, codex
+        case claude, codex, sakana
         var id: String { rawValue }
     }
 
@@ -73,6 +73,7 @@ struct SettingsRootView: View {
             switch sheet {
             case .claude: ClaudeLoginSheet(store: store)
             case .codex: CodexLoginSheet(store: store)
+            case .sakana: SakanaLoginSheet(store: store)
             }
         }
     }
@@ -91,6 +92,7 @@ struct SettingsRootView: View {
                 Menu("添加账号") {
                     Button("登录 Claude 账号…") { loginSheet = .claude }
                     Button("登录 Codex 账号…") { loginSheet = .codex }
+                    Button("登录 Sakana Console…") { loginSheet = .sakana }
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
@@ -177,7 +179,7 @@ struct SettingsRootView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("\(snapshot.accountName) · 5H \(Int(snapshot.fiveHourRemaining.rounded()))%")
+                Text(accountSubtitle(snapshot))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -207,6 +209,17 @@ struct SettingsRootView: View {
         }
         store.removeQuota(importedId: id)
         Task { await store.refresh() }
+    }
+
+    private func accountSubtitle(_ snapshot: QuotaSnapshot) -> String {
+        if snapshot.isAPIUsage {
+            let primary = snapshot.apiPrimaryText ?? "API"
+            if let secondary = snapshot.apiSecondaryText, !secondary.isEmpty {
+                return "\(snapshot.accountName) · \(primary) · \(secondary)"
+            }
+            return "\(snapshot.accountName) · \(primary)"
+        }
+        return "\(snapshot.accountName) · 5H \(Int(snapshot.fiveHourRemaining.rounded()))%"
     }
 
     private func aliasDraftBinding(for key: String) -> Binding<String> {

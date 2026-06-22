@@ -11,7 +11,7 @@ VERSION="${VERSION:-0.2.2}"
 BUNDLE_VERSION="${BUNDLE_VERSION:-3}"
 
 cd "$ROOT"
-swift build -c release
+swift build -c release ${SWIFT_BUILD_FLAGS:-}
 
 rm -rf "$APP"
 mkdir -p "$MACOS" "$APP/Contents/Resources"
@@ -22,7 +22,7 @@ cp -R "$ROOT/.build/release/QuotaGlass_QuotaGlass.bundle" "$APP/Contents/Resourc
 swift "$ROOT/scripts/make_icon.swift" "$ICONSET"
 iconutil -c icns "$ICONSET" -o "$ICON"
 
-for logo in codex claude; do
+for logo in codex claude sakana; do
   logo_path="$APP/Contents/Resources/QuotaGlass_QuotaGlass.bundle/$logo.svg"
   if [[ ! -s "$logo_path" ]]; then
     printf 'Missing bundled logo: %s\n' "$logo_path" >&2
@@ -49,8 +49,14 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <string>QuotaGlass</string>
   <key>CFBundleIconFile</key>
   <string>QuotaGlass</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
   <key>CFBundleShortVersionString</key>
   <string>$VERSION</string>
   <key>CFBundleVersion</key>
@@ -61,9 +67,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <true/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSPrincipalClass</key>
+  <string>NSApplication</string>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
 </dict>
 </plist>
 PLIST
+
+printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 codesign --force --deep --sign - "$APP" >/dev/null
 rm -f "$ZIP"

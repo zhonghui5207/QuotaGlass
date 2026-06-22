@@ -7,6 +7,10 @@ struct QuotaGlassMain {
     private static var delegate: AppDelegate?
 
     static func main() {
+        if ProcessInfo.processInfo.environment["QG_SAKANA_DEBUG"] != nil {
+            printSakanaDebug()
+            return
+        }
         if let path = ProcessInfo.processInfo.environment["QG_SNAPSHOT"] {
             renderSnapshot(to: path)
             return
@@ -17,6 +21,19 @@ struct QuotaGlassMain {
         Self.delegate = delegate
         app.delegate = delegate
         app.run()
+    }
+
+    @MainActor
+    static func printSakanaDebug() {
+        _ = NSApplication.shared
+        let sem = DispatchSemaphore(value: 0)
+        Task {
+            print(await SakanaUsage.debugReport())
+            sem.signal()
+        }
+        while sem.wait(timeout: .now()) == .timedOut {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
     }
 
     /// Headless render of the popover to a PNG, for design verification without screen-recording permission.

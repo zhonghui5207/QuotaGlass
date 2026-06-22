@@ -60,6 +60,13 @@ struct NativeClaudeAccount {
     }
 }
 
+struct NativeSakanaAccount {
+    enum Source: Equatable { case environment(String), dotenv(URL), keychain(String) }
+    var source: Source
+    var accountName: String
+    var apiKey: String
+}
+
 enum CodexAuthReader {
     static func authFileURL() -> URL {
         if let home = ProcessInfo.processInfo.environment["CODEX_HOME"], !home.isEmpty {
@@ -198,6 +205,90 @@ enum ClaudeAuthReader {
         guard let raw else { return nil }
         // Claude CLI stores epoch milliseconds.
         return Date(timeIntervalSince1970: raw > 10_000_000_000 ? raw / 1000 : raw)
+    }
+}
+
+enum SakanaAuthReader {
+    static let defaultEnvKey = "SAKANA_API_KEY"
+    static let legacyKeychainService = "sakana-api-key"
+
+    static func loadAll() -> [NativeSakanaAccount] {
+        var accounts: [NativeSakanaAccount] = []
+        var seenKeys = Set<String>()
+
+        func add(_ account: NativeSakanaAccount?) {
+            guard let account, !account.apiKey.isEmpty else { return }
+            guard seenKeys.insert(account.apiKey).inserted else { return }
+            accounts.append(account)
+        }
+
+        let envKeys = configuredEnvKeys()
+        for key in envKeys {
+            let value = ProcessInfo.processInfo.environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let value, !value.isEmpty {
+                add(NativeSakanaAccount(source: .environment(key), accountName: key, apiKey: value))
+            }
+        }
+
+        for url in dotenvURLs() {
+            guard let values = parseDotenv(url: url) else { continue }
+            for key in envKeys {
+                if let value = values[key], !value.isEmpty {
+                    add(NativeSakanaAccount(source: .dotenv(url), accountName: key, apiKey: value))
+                }
+            }
+        }
+
+        if let data = ClaudeKeychain.read(service: legacyKeychainService),
+           let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty {
+            add(NativeSakanaAccount(source: .keychain(legacyKeychainService), accountName: legacyKeychainService, apiKey: value))
+        }
+
+        return accounts
+    }
+
+    private static func configuredEnvKeys() -> [String] {
+        var keys = [defaultEnvKey]
+        let config = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/config.toml")
+        if let text = try? String(contentsOf: config, encoding: .utf8) {
+            let pattern = #"env_key\s*=\s*"([^"]+)""#
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                for match in regex.matches(in: text, range: range) {
+                    guard match.numberOfRanges > 1,
+                          let r = Range(match.range(at: 1), in: text) else { continue }
+                    let key = String(text[r])
+                    if key.uppercased().contains("SAKANA"), !keys.contains(key) { keys.append(key) }
+                }
+            }
+        }
+        return keys
+    }
+
+    private static func dotenvURLs() -> [URL] {
+        [
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/.env"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/sakana/.env"),
+        ]
+    }
+
+    private static func parseDotenv(url: URL) -> [String: String]? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var values: [String: String] = [:]
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { continue }
+            let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            var value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            if (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
+                value = String(value.dropFirst().dropLast())
+            }
+            values[key] = value
+        }
+        return values
     }
 }
 

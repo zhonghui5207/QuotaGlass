@@ -1,6 +1,6 @@
 # QuotaGlass
 
-A native macOS menu-bar quota monitor for AI coding subscriptions (Codex / Claude Code), with a fully transparent terminal-style popover (JetBrainsMono, zero blur).
+A native macOS menu-bar quota monitor for AI coding subscriptions and API usage (Codex / Claude Code / Sakana API), with a fully transparent terminal-style popover (JetBrainsMono, zero blur).
 
 <p align="center">
   <img src="docs/screenshot.png" width="442" alt="QuotaGlass — menu-bar badge with per-account initials, transparent popover with low-quota warnings" />
@@ -26,7 +26,9 @@ Then click the menu-bar badge. Accounts are picked up automatically from your lo
 - **Fully native credential reading — no Python, no external checker:**
   - Codex: `~/.codex/auth.json` (honors `CODEX_HOME`), JWT-decoded email/plan, automatic token refresh with write-back
   - Claude Code: `~/.claude/.credentials.json` plus every `Claude Code-credentials*` keychain item — multi-profile / multi-account setups appear as separate rows
+  - Sakana API: `SAKANA_API_KEY` from the process environment, `~/.codex/.env`, or the legacy `sakana-api-key` Keychain item; validates against `https://api.sakana.ai/v1/models`
 - Usage fetched from the official endpoints (`chatgpt.com/backend-api/wham/usage`, `api.anthropic.com/api/oauth/usage`)
+- Sakana console billing: sign in once from Settings → Add account → Sakana Console; QuotaGlass then reads its own WebView session and parses subscription windows plus pay-as-you-go credit/usage
 - Per-account cache: a transient fetch failure never blanks the UI; affected rows show an orange "旧数据" marker instead
 - Background auto-refresh (5/10/15 min, configurable) + immediate refresh on wake from sleep
 - Low-quota system notifications: one alert below 30% remaining, another below 10%, re-armed after the window resets
@@ -59,12 +61,12 @@ The script builds a release binary, copies the SPM resource bundle (required —
 ## Requirements
 
 - macOS 26+ for the Liquid Glass look; on macOS 14–15 the popover falls back to a dark HUD blur
-- Logged-in Codex CLI and/or Claude Code CLI on the same machine
+- Logged-in Codex CLI and/or Claude Code CLI on the same machine; optional `SAKANA_API_KEY` for Sakana API status/usage
 
 ## Direction / not yet done
 
 1. Multiple Codex accounts (currently only the single `auth.json`)
 2. Usage history + sparkline (the chart button was removed until this exists)
-3. Spend/overage display (API field currently unused)
+3. First-class provider-specific spend/overage endpoints when vendors expose stable billing APIs
 4. Desktop floating HUD
 5. Properly signed/notarized distribution

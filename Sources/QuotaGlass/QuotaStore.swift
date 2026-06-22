@@ -2,6 +2,11 @@ import Foundation
 import AppKit
 
 struct QuotaSnapshot: Identifiable, Equatable {
+    enum Presentation: Equatable {
+        case quotaWindows
+        case apiUsage
+    }
+
     let id = UUID()
     var serviceName: String
     var accountName: String
@@ -12,6 +17,10 @@ struct QuotaSnapshot: Identifiable, Equatable {
     var weeklyReset: String
     var source: String
     var fetchedAt: Date
+    var presentation: Presentation = .quotaWindows
+    var apiPrimaryText: String? = nil
+    var apiSecondaryText: String? = nil
+    var apiDetailText: String? = nil
     /// Set when this account was added via in-app OAuth login (removable in settings).
     var importedId: String? = nil
     /// True when this snapshot is retained from a previous successful fetch
@@ -33,6 +42,8 @@ struct QuotaSnapshot: Identifiable, Equatable {
 
     var isClaude: Bool { serviceName.localizedCaseInsensitiveContains("Claude") }
     var isCodex: Bool { serviceName.localizedCaseInsensitiveContains("Codex") }
+    var isSakana: Bool { serviceName.localizedCaseInsensitiveContains("Sakana") }
+    var isAPIUsage: Bool { presentation == .apiUsage }
 }
 
 enum QuotaLoadState: Equatable {
