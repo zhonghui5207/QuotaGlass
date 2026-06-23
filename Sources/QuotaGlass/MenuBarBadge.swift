@@ -32,16 +32,19 @@ enum MenuBarBadge {
         return fallback
     }
 
-    /// Alias initials, only for accounts whose service appears more than once
-    /// in the badge — a lone Codex or Claude needs no disambiguation.
+    /// Alias initials are always shown when the user set an alias. Without an
+    /// alias, only duplicated services get an account-name initial.
     private static func initials(for snapshots: [QuotaSnapshot]) -> [UUID: String] {
         var serviceCounts: [String: Int] = [:]
         for snapshot in snapshots { serviceCounts[snapshot.serviceName, default: 0] += 1 }
         var result: [UUID: String] = [:]
-        for snapshot in snapshots where (serviceCounts[snapshot.serviceName] ?? 0) > 1 {
+        for snapshot in snapshots {
             let key = accountKey(snapshot)
-            let name = AliasStore.shared.alias(for: key) ?? snapshot.accountName
-            if let first = name.first { result[snapshot.id] = String(first).uppercased() }
+            if let alias = AliasStore.shared.alias(for: key), let first = alias.first {
+                result[snapshot.id] = String(first).uppercased()
+            } else if (serviceCounts[snapshot.serviceName] ?? 0) > 1, let first = snapshot.accountName.first {
+                result[snapshot.id] = String(first).uppercased()
+            }
         }
         return result
     }

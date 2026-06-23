@@ -45,6 +45,7 @@ struct SettingsRootView: View {
     @State private var draftLaunchAtLogin = false
     @State private var draftNotifyLowQuota = true
     @State private var draftRefreshInterval = 300
+    @State private var didJustSave = false
     @State private var loginSheet: LoginSheet?
 
     enum LoginSheet: String, Identifiable {
@@ -69,6 +70,9 @@ struct SettingsRootView: View {
         }
         .frame(width: 500)
         .onAppear(perform: resetDrafts)
+        .onChange(of: draftLaunchAtLogin) { _, _ in didJustSave = false }
+        .onChange(of: draftNotifyLowQuota) { _, _ in didJustSave = false }
+        .onChange(of: draftRefreshInterval) { _, _ in didJustSave = false }
         .sheet(item: $loginSheet) { sheet in
             switch sheet {
             case .claude: ClaudeLoginSheet(store: store)
@@ -152,7 +156,7 @@ struct SettingsRootView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Text(hasChanges ? "有未保存更改" : "设置已保存")
+            Text(saveStatusText)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer()
@@ -164,6 +168,11 @@ struct SettingsRootView: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 12)
+    }
+
+    private var saveStatusText: String {
+        if didJustSave { return "修改已保存" }
+        return hasChanges ? "有未保存更改" : "设置已保存"
     }
 
     private func row(for snapshot: QuotaSnapshot) -> some View {
@@ -260,14 +269,20 @@ struct SettingsRootView: View {
     private func aliasDraftBinding(for key: String) -> Binding<String> {
         Binding(
             get: { draftAliases[key] ?? "" },
-            set: { draftAliases[key] = $0 }
+            set: {
+                didJustSave = false
+                draftAliases[key] = $0
+            }
         )
     }
 
     private func menuBarDraftBinding(for key: String) -> Binding<Bool> {
         Binding(
             get: { draftMenuBarShow[key] ?? currentMenuBarValue(for: key) },
-            set: { draftMenuBarShow[key] = $0 }
+            set: {
+                didJustSave = false
+                draftMenuBarShow[key] = $0
+            }
         )
     }
 
@@ -324,6 +339,7 @@ struct SettingsRootView: View {
         prefs.refreshInterval = draftRefreshInterval
         prefs.setLaunchAtLogin(draftLaunchAtLogin)
         resetDrafts()
+        didJustSave = true
     }
 
     private func currentMenuBarValue(for key: String) -> Bool {
