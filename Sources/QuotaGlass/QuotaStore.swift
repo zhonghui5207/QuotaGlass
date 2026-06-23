@@ -21,6 +21,7 @@ struct QuotaSnapshot: Identifiable, Equatable {
     var apiPrimaryText: String? = nil
     var apiSecondaryText: String? = nil
     var apiDetailText: String? = nil
+    var warningText: String? = nil
     /// Set when this account was added via in-app OAuth login (removable in settings).
     var importedId: String? = nil
     /// True when this snapshot is retained from a previous successful fetch
@@ -34,10 +35,22 @@ struct QuotaSnapshot: Identifiable, Equatable {
     var fiveHourUsedPct: Double { max(0, min(100, fiveHourUsed)) }
     var weeklyUsedPct: Double { max(0, min(100, weeklyUsed)) }
 
-    /// Short label for the account, preferring a real plan name over the generic "Account".
+    /// Short label for the account. Claude Code cloud profiles often have no
+    /// email in their credential blob, so preserve their keychain suffix here.
     var displaySubtitle: String {
+        if isClaude, shouldShowAccountNameWithPlan {
+            return "\(accountName) · \(planName)"
+        }
         if !planName.isEmpty && planName != "Account" { return planName }
         return accountName
+    }
+
+    private var shouldShowAccountNameWithPlan: Bool {
+        !accountName.isEmpty
+            && accountName != "Default"
+            && !accountName.contains("@")
+            && !planName.isEmpty
+            && planName != "Account"
     }
 
     var isClaude: Bool { serviceName.localizedCaseInsensitiveContains("Claude") }
@@ -67,12 +80,12 @@ final class QuotaStore: ObservableObject {
     private let minimumRefreshInterval: TimeInterval = 60
 
     // Per-account cache so a transient fetch failure for one account never makes
-    // it vanish from the UI. Keyed by service+account, ordered by first-seen.
+    // it vanish from the UI. Keyed by the shared account identity helper.
     private var cache: [String: QuotaSnapshot] = [:]
     private var orderKeys: [String] = []
 
     private func key(for snapshot: QuotaSnapshot) -> String {
-        snapshot.serviceName + "·" + snapshot.accountName
+        accountKey(snapshot)
     }
 
     func primaryQuota(matching name: String) -> QuotaSnapshot? {
@@ -121,9 +134,22 @@ final class QuotaStore: ObservableObject {
         rebuild()
     }
 
+    func archiveQuota(key: String) {
+        cache.removeValue(forKey: key)
+        orderKeys.removeAll { $0 == key }
+        rebuild()
+    }
+
+    func applyVisibilityPreferences() {
+        rebuild()
+    }
+
     /// Merge fresh snapshots into the cache. Accounts present in `fresh` are
     /// updated (live); accounts absent this round are retained from cache.
     private func merge(_ fresh: [QuotaSnapshot]) {
+        if fresh.contains(where: { $0.source != "Demo" }) {
+            removeDemoSnapshots()
+        }
         for var snapshot in fresh {
             snapshot.isStale = false
             let k = key(for: snapshot)
@@ -134,7 +160,18 @@ final class QuotaStore: ObservableObject {
     }
 
     private func rebuild() {
-        quotas = orderKeys.compactMap { cache[$0] }
+        let archived = PrefsStore.shared.archivedAccountKeys
+        quotas = orderKeys
+            .filter { !archived.contains($0) }
+            .compactMap { cache[$0] }
+    }
+
+    private func removeDemoSnapshots() {
+        let demoKeys = cache.filter { $0.value.source == "Demo" }.map(\.key)
+        for key in demoKeys {
+            cache.removeValue(forKey: key)
+            orderKeys.removeAll { $0 == key }
+        }
     }
 
     static func demoQuotas() -> [QuotaSnapshot] {

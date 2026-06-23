@@ -260,6 +260,11 @@ private struct ServiceBlockView: View {
                     .font(Theme.font(size: 9))
                     .foregroundStyle(.orange)
             }
+            if let warningText = snapshot.warningText {
+                Text(warningText)
+                    .font(Theme.font(size: 9))
+                    .foregroundStyle(.orange)
+            }
         }
     }
 

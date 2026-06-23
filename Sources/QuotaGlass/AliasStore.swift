@@ -93,6 +93,9 @@ struct SettingsRootView: View {
                     Button("登录 Claude 账号…") { loginSheet = .claude }
                     Button("登录 Codex 账号…") { loginSheet = .codex }
                     Button("登录 Sakana Console…") { loginSheet = .sakana }
+                    Divider()
+                    Button("恢复归档展示") { restoreArchivedAccounts() }
+                        .disabled(prefs.archivedAccountKeys.isEmpty)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
@@ -190,16 +193,28 @@ struct SettingsRootView: View {
                 .frame(width: 150)
             Toggle("菜单栏", isOn: menuBarDraftBinding(for: key))
                 .toggleStyle(.checkbox)
-            if let importedId = snapshot.importedId {
-                Button {
-                    removeImported(id: importedId)
-                } label: {
+            Button {
+                removeOrArchive(snapshot)
+            } label: {
+                if snapshot.importedId == nil {
+                    Label("归档", systemImage: "archivebox")
+                        .font(.system(size: 11))
+                        .labelStyle(.titleAndIcon)
+                } else {
                     Image(systemName: "trash")
                         .font(.system(size: 11))
                 }
-                .buttonStyle(.borderless)
-                .help("移除这个导入的账号")
             }
+            .buttonStyle(.borderless)
+            .help(snapshot.importedId == nil ? "归档这个展示，并取消菜单栏显示" : "移除这个导入的账号")
+        }
+    }
+
+    private func removeOrArchive(_ snapshot: QuotaSnapshot) {
+        if let importedId = snapshot.importedId {
+            removeImported(id: importedId)
+        } else {
+            archiveSnapshot(snapshot)
         }
     }
 
@@ -211,15 +226,35 @@ struct SettingsRootView: View {
         Task { await store.refresh() }
     }
 
+    private func archiveSnapshot(_ snapshot: QuotaSnapshot) {
+        let key = accountKey(snapshot)
+        prefs.archiveAccount(key: key)
+        draftAliases.removeValue(forKey: key)
+        draftMenuBarShow.removeValue(forKey: key)
+        store.archiveQuota(key: key)
+    }
+
+    private func restoreArchivedAccounts() {
+        prefs.restoreArchivedAccounts()
+        store.applyVisibilityPreferences()
+        Task { await store.refresh() }
+    }
+
     private func accountSubtitle(_ snapshot: QuotaSnapshot) -> String {
+        func withWarning(_ text: String) -> String {
+            if let warning = snapshot.warningText {
+                return "\(text) · \(warning)"
+            }
+            return text
+        }
         if snapshot.isAPIUsage {
             let primary = snapshot.apiPrimaryText ?? "API"
             if let secondary = snapshot.apiSecondaryText, !secondary.isEmpty {
-                return "\(snapshot.accountName) · \(primary) · \(secondary)"
+                return withWarning("\(snapshot.accountName) · \(primary) · \(secondary)")
             }
-            return "\(snapshot.accountName) · \(primary)"
+            return withWarning("\(snapshot.accountName) · \(primary)")
         }
-        return "\(snapshot.accountName) · 5H \(Int(snapshot.fiveHourRemaining.rounded()))%"
+        return withWarning("\(snapshot.accountName) · 5H \(Int(snapshot.fiveHourRemaining.rounded()))%")
     }
 
     private func aliasDraftBinding(for key: String) -> Binding<String> {

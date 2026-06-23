@@ -104,9 +104,19 @@ enum ClaudeOAuth {
         // Token responses may carry account info; take what's there.
         let accountInfo = root["account"] as? [String: Any]
         let email = accountInfo?["email_address"] as? String ?? accountInfo?["email"] as? String
+        let accountId = [
+            accountInfo?["uuid"],
+            accountInfo?["id"],
+            accountInfo?["account_uuid"],
+            accountInfo?["account_id"],
+            email,
+        ]
+            .compactMap { $0 as? String }
+            .first { !$0.isEmpty }
+            ?? "token-\(tokenFingerprint(access))"
 
         let account = ImportedAccount(
-            id: email ?? UUID().uuidString,
+            id: accountId,
             service: .claude,
             email: email,
             planType: nil,
@@ -119,6 +129,11 @@ enum ClaudeOAuth {
             expiresAtMillis: expiresMillis
         )
         return (account, tokens)
+    }
+
+    private static func tokenFingerprint(_ token: String) -> String {
+        let digest = SHA256.hash(data: Data(token.utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 }
 

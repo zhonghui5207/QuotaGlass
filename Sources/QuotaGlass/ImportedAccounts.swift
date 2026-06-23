@@ -79,7 +79,11 @@ enum ImportedAccountStore {
     }
 
     static func tokenKey(_ account: ImportedAccount) -> String {
-        account.service.rawValue + ":" + account.id
+        tokenKey(service: account.service, id: account.id)
+    }
+
+    static func tokenKey(service: ImportedAccount.Service, id: String) -> String {
+        service.rawValue + ":" + id
     }
 
     // MARK: - Tokens (own keychain namespace, SecItem)

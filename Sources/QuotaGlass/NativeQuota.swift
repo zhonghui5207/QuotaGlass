@@ -164,7 +164,7 @@ enum ClaudeRefresher {
         case .imported(let id):
             ImportedAccountStore.saveTokens(
                 ImportedTokens(accessToken: accessToken, refreshToken: refreshToken, idToken: nil, expiresAtMillis: millis),
-                accountId: "claude:" + id
+                accountId: ImportedAccountStore.tokenKey(service: .claude, id: id)
             )
         case .file:
             let url = ClaudeAuthReader.credentialsFileURL()
@@ -720,7 +720,7 @@ struct NativeQuotaProvider {
         }
 
         if result.isEmpty { throw NativeQuotaError.noCredentials }
-        return result
+        return annotatePotentialClaudeCredentialClones(result)
     }
 
     /// The default auth.json account plus OAuth-imported ones, deduplicated by
@@ -778,6 +778,33 @@ struct NativeQuotaProvider {
             apiDetailText: usage.detailText,
             importedId: nil
         )
+    }
+
+    private func annotatePotentialClaudeCredentialClones(_ snapshots: [QuotaSnapshot]) -> [QuotaSnapshot] {
+        var snapshots = snapshots
+        var groups: [String: [Int]] = [:]
+        for (index, snapshot) in snapshots.enumerated() where snapshot.isClaude {
+            let fingerprint = [
+                quotaFingerprint(snapshot.fiveHourUsed),
+                quotaFingerprint(snapshot.weeklyUsed),
+                snapshot.fiveHourReset,
+                snapshot.weeklyReset,
+            ].joined(separator: "|")
+            groups[fingerprint, default: []].append(index)
+        }
+
+        for indexes in groups.values where indexes.count > 1 {
+            let accountNames = Set(indexes.map { snapshots[$0].accountName })
+            guard accountNames.count > 1 else { continue }
+            for index in indexes {
+                snapshots[index].warningText = "可能同一登录"
+            }
+        }
+        return snapshots
+    }
+
+    private func quotaFingerprint(_ value: Double) -> String {
+        String(format: "%.1f", value)
     }
 
     private func planLabel(_ plan: String?) -> String {

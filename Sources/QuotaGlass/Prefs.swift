@@ -32,6 +32,13 @@ final class PrefsStore: ObservableObject {
         }
     }
 
+    @Published var archivedAccountKeys: Set<String> {
+        didSet {
+            defaults.set(Array(archivedAccountKeys).sorted(), forKey: "archivedAccountKeys")
+            NotificationCenter.default.post(name: .qgPrefsChanged, object: nil)
+        }
+    }
+
     @Published var notifyLowQuota: Bool {
         didSet {
             defaults.set(notifyLowQuota, forKey: "notifyLowQuota")
@@ -46,9 +53,22 @@ final class PrefsStore: ObservableObject {
 
     private init() {
         menuBarShow = (defaults.dictionary(forKey: "menuBarShow") as? [String: Bool]) ?? [:]
+        let archived = defaults.stringArray(forKey: "archivedAccountKeys")
+            ?? defaults.stringArray(forKey: "hiddenAccountKeys")
+            ?? []
+        archivedAccountKeys = Set(archived)
         notifyLowQuota = defaults.object(forKey: "notifyLowQuota") as? Bool ?? true
         let stored = defaults.integer(forKey: "refreshInterval")
         refreshInterval = stored == 0 ? 300 : stored
+    }
+
+    func archiveAccount(key: String) {
+        archivedAccountKeys.insert(key)
+        menuBarShow[key] = false
+    }
+
+    func restoreArchivedAccounts() {
+        archivedAccountKeys.removeAll()
     }
 
     var launchAtLogin: Bool {
