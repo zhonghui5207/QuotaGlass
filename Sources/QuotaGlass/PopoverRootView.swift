@@ -164,28 +164,38 @@ struct PopoverRootView: View {
             .frame(maxWidth: .infinity)
             .padding(.vertical, 28)
         } else {
-            VStack(spacing: 0) {
-                ForEach(Array(orderedQuotas.enumerated()), id: \.element.id) { index, snapshot in
-                    if index > 0 {
-                        GlassHairline()
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 3)
-                    }
-                    ServiceBlockView(snapshot: snapshot)
-                }
-                if case .failed(let message) = store.state {
-                    Text(shortError(message))
-                        .font(Theme.font(size: 11))
-                        .foregroundStyle(Theme.textSecondary)
-                        .lineLimit(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 10)
-                }
+            if #available(macOS 26.0, *) {
+                GlassEffectContainer { blockList }
+            } else {
+                blockList
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 10)
         }
+    }
+
+    private var blockList: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(orderedQuotas.enumerated()), id: \.element.id) { index, snapshot in
+                if index > 0 {
+                    // Same 7pt the hairline row occupied; the capsule edges
+                    // now do the separating.
+                    Color.clear.frame(height: 1)
+                        .padding(.vertical, 3)
+                }
+                ServiceBlockView(snapshot: snapshot)
+                    .modifier(ServiceBlockGlass())
+            }
+            if case .failed(let message) = store.state {
+                Text(shortError(message))
+                    .font(Theme.font(size: 11))
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
     }
 
     private func shortError(_ error: String) -> String {
@@ -205,6 +215,31 @@ struct PopoverRootView: View {
         return store.quotas.enumerated().sorted { a, b in
             rank(a.element) != rank(b.element) ? rank(a.element) < rank(b.element) : a.offset < b.offset
         }.map(\.element)
+    }
+}
+
+// MARK: - Service block glass capsule
+
+/// Control-Center-style Liquid Glass capsule behind each service block: its
+/// own lensing rim and highlights, floating on the panel's backdrop. Layout
+/// is untouched — the capsule wraps the block's existing padded bounds.
+private struct ServiceBlockGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(
+                .regular,
+                in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            )
+        } else {
+            content.background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                    )
+            )
+        }
     }
 }
 
