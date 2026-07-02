@@ -45,6 +45,39 @@ struct PopoverRootView: View {
     @State private var refreshRotation: Double = 0
 
     var body: some View {
+        // On macOS 26 the hosting NSGlassEffectView supplies the entire widget
+        // chrome (refraction, rim light, shadow); any extra fill or border here
+        // just muddies the clear glass, so the stack stays bare.
+        if #available(macOS 26.0, *) {
+            contentStack
+        } else {
+            contentStack
+                .background(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .fill(Color.black.opacity(0.30))
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.34),
+                                    Color.white.opacity(0.10),
+                                    Color.white.opacity(0.03)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
+                .shadow(color: .black.opacity(0.20), radius: 1, y: 1)
+        }
+    }
+
+    private var contentStack: some View {
         VStack(spacing: 0) {
             header
             GlassHairline()
@@ -52,41 +85,6 @@ struct PopoverRootView: View {
         }
         .frame(width: 340)
         .fixedSize(horizontal: false, vertical: true)
-        .background(panelBacking)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.34),
-                            Color.white.opacity(0.10),
-                            Color.white.opacity(0.03)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: .black.opacity(0.22), radius: 18, y: 9)
-        .shadow(color: .black.opacity(0.20), radius: 1, y: 1)
-    }
-
-    private var panelBacking: some View {
-        RoundedRectangle(cornerRadius: 28, style: .continuous)
-            .fill(fallbackBacking)
-            .overlay {
-                RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .fill(Color.black.opacity(0.075))
-            }
-    }
-
-    private var fallbackBacking: Color {
-        if #available(macOS 26.0, *) {
-            return Color.clear
-        }
-        return Color.black.opacity(0.22)
     }
 
     // MARK: Header

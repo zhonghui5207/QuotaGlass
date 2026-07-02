@@ -720,7 +720,8 @@ struct NativeQuotaProvider {
         }
 
         if result.isEmpty { throw NativeQuotaError.noCredentials }
-        return annotatePotentialClaudeCredentialClones(result)
+        let archivedKeys = await MainActor.run { PrefsStore.shared.archivedAccountKeys }
+        return annotatePotentialClaudeCredentialClones(result, excluding: archivedKeys)
     }
 
     /// The default auth.json account plus OAuth-imported ones, deduplicated by
@@ -780,10 +781,12 @@ struct NativeQuotaProvider {
         )
     }
 
-    private func annotatePotentialClaudeCredentialClones(_ snapshots: [QuotaSnapshot]) -> [QuotaSnapshot] {
+    /// Archived accounts are excluded: warning about a twin the user has hidden
+    /// (and cannot see) reads as a false positive on the remaining visible row.
+    private func annotatePotentialClaudeCredentialClones(_ snapshots: [QuotaSnapshot], excluding archivedKeys: Set<String>) -> [QuotaSnapshot] {
         var snapshots = snapshots
         var groups: [String: [Int]] = [:]
-        for (index, snapshot) in snapshots.enumerated() where snapshot.isClaude {
+        for (index, snapshot) in snapshots.enumerated() where snapshot.isClaude && !archivedKeys.contains(accountKey(snapshot)) {
             let fingerprint = [
                 quotaFingerprint(snapshot.fiveHourUsed),
                 quotaFingerprint(snapshot.weeklyUsed),
