@@ -17,10 +17,33 @@ struct QuotaGlassMain {
         }
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        app.mainMenu = makeMainMenu()
         let delegate = AppDelegate()
         Self.delegate = delegate
         app.delegate = delegate
         app.run()
+    }
+
+    /// Accessory apps get no menu bar by default, which silently disables the
+    /// standard edit key equivalents (⌘V/⌘C/⌘X/⌘A/⌘Z) in every text field —
+    /// e.g. pasting the authorization code in the login sheets. An invisible
+    /// main menu with an Edit menu restores them via the responder chain.
+    private static func makeMainMenu() -> NSMenu {
+        let mainMenu = NSMenu()
+
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "编辑")
+        editItem.submenu = editMenu
+
+        editMenu.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "拷贝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        return mainMenu
     }
 
     @MainActor
