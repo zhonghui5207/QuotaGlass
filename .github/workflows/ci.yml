@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Build with warnings as errors
+        run: swift build -c debug -Xswiftc -warnings-as-errors
+
+      - name: Run tests
+        run: swift test -Xswiftc -warnings-as-errors
+
+      - name: Build universal app bundle
+        run: bash scripts/make_app.sh
+
+      - name: Verify packaged binary
+        run: |
+          lipo build/QuotaGlass.app/Contents/MacOS/QuotaGlass -verify_arch arm64
+          lipo build/QuotaGlass.app/Contents/MacOS/QuotaGlass -verify_arch x86_64
+          codesign --verify --deep --strict build/QuotaGlass.app
+          unzip -tq build/QuotaGlass.app.zip

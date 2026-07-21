@@ -1,6 +1,6 @@
 # QuotaGlass
 
-A native macOS menu-bar quota monitor for AI coding subscriptions and API usage (Codex / Claude Code / Sakana API), with a fully transparent terminal-style popover (JetBrainsMono, zero blur).
+A native macOS menu-bar quota monitor for AI coding subscriptions and API usage (Codex / Claude Code / Sakana API), with a transparent system-style popover.
 
 <p align="center">
   <img src="docs/screenshot.png" width="442" alt="QuotaGlass — menu-bar badge with per-account initials, transparent popover with low-quota warnings" />
@@ -37,8 +37,10 @@ Then click the menu-bar badge. Accounts are picked up automatically from your lo
 
 ## Run in development
 
+Development requires a full Xcode installation with the macOS 26 SDK. If your shell currently points at Command Line Tools, select Xcode for the command without changing the global setting:
+
 ```bash
-swift run QuotaGlass
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift run QuotaGlass
 ```
 
 Notes for dev runs (bare executable, no bundle): notifications and launch-at-login are disabled; they require the `.app`.
@@ -52,11 +54,38 @@ Debug helpers:
 ## Build the .app
 
 ```bash
-bash scripts/make_app.sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer bash scripts/make_app.sh
 open build/QuotaGlass.app
 ```
 
-The script builds a release binary, copies the SPM resource bundle (required — `Bundle.module` traps without it), writes the Info.plist, and ad-hoc signs the bundle.
+The script builds a universal `arm64 + x86_64` release binary, copies the SPM resource bundle (required — `Bundle.module` traps without it), derives the version from the latest `vX.Y.Z` Git tag, writes the Info.plist, verifies the archive, and ad-hoc signs the bundle for local use.
+
+To build a single architecture while iterating:
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SWIFT_BUILD_FLAGS="--arch arm64" \
+bash scripts/make_app.sh
+```
+
+Maintainer release builds can provide `VERSION`, `BUNDLE_VERSION`, and a stable signing identity. `RELEASE_BUILD=1` additionally requires a clean checkout whose exact tag matches `VERSION`:
+
+```bash
+RELEASE_BUILD=1 \
+VERSION=0.3.0 \
+BUNDLE_VERSION=26 \
+CODESIGN_IDENTITY="Developer ID Application: Example (TEAMID)" \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+bash scripts/make_app.sh
+```
+
+## Test
+
+```bash
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun swift test
+```
+
+The GitHub Actions workflow builds with warnings as errors, runs the test suite, and smoke-tests the universal app archive on the macOS 26 runner.
 
 ## Requirements
 
@@ -65,8 +94,8 @@ The script builds a release binary, copies the SPM resource bundle (required —
 
 ## Direction / not yet done
 
-1. Multiple Codex accounts (currently only the single `auth.json`)
+1. Multiple auto-discovered local Codex profiles (the standard CLI still exposes one `auth.json`; additional accounts can be added through in-app OAuth)
 2. Usage history + sparkline (the chart button was removed until this exists)
 3. First-class provider-specific spend/overage endpoints when vendors expose stable billing APIs
 4. Desktop floating HUD
-5. Properly signed/notarized distribution
+5. Notarized distribution (the build script already supports a stable Developer ID identity)
