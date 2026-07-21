@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Network
+import Security
 
 // In-app OAuth login for adding accounts.
 //
@@ -14,10 +15,16 @@ import Network
 // codex CLI client id) → automatic code capture → token exchange.
 
 enum PKCE {
-    static func verifier() -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        return base64url(Data(bytes))
+    /// Generates a PKCE verifier from the system CSPRNG. New call sites should
+    /// surface this error instead of silently continuing with weak randomness.
+    static func generateVerifier() throws -> String {
+        base64url(try randomBytes(count: 32))
+    }
+
+    /// OAuth state is generated independently from the PKCE verifier so the
+    /// verifier itself is never disclosed in an authorization URL.
+    static func generateState() throws -> String {
+        base64url(try randomBytes(count: 32))
     }
 
     static func challenge(for verifier: String) -> String {
@@ -30,6 +37,26 @@ enum PKCE {
             .replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
     }
+
+    private static func randomBytes(count: Int) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw PKCEGenerationError.randomGenerationFailed(status)
+        }
+        return Data(bytes)
+    }
+}
+
+enum PKCEGenerationError: LocalizedError {
+    case randomGenerationFailed(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .randomGenerationFailed(let status):
+            return "无法生成安全随机数（错误码：\(status)）"
+        }
+    }
 }
 
 enum OAuthLoginError: LocalizedError {
@@ -37,6 +64,7 @@ enum OAuthLoginError: LocalizedError {
     case portInUse
     case cancelled
     case stateMismatch
+    case missingState
 
     var errorDescription: String? {
         switch self {
@@ -44,6 +72,7 @@ enum OAuthLoginError: LocalizedError {
         case .portInUse: return "本地端口 1455 被占用（是否有 codex CLI 正在登录？），关掉后重试"
         case .cancelled: return "登录已取消"
         case .stateMismatch: return "回调校验失败（state 不匹配），请重试"
+        case .missingState: return "授权码缺少 state，请重新打开浏览器授权"
         }
     }
 }
@@ -54,7 +83,7 @@ enum ClaudeOAuth {
     static let scopes = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
     static let redirectURI = "https://platform.claude.com/oauth/code/callback"
 
-    static func authorizeURL(verifier: String) -> URL {
+    static func authorizeURL(verifier: String, state: String) -> URL {
         var comps = URLComponents(string: "https://claude.ai/oauth/authorize")!
         comps.queryItems = [
             .init(name: "code", value: "true"),
@@ -64,54 +93,46 @@ enum ClaudeOAuth {
             .init(name: "scope", value: scopes),
             .init(name: "code_challenge", value: PKCE.challenge(for: verifier)),
             .init(name: "code_challenge_method", value: "S256"),
-            .init(name: "state", value: verifier),
+            .init(name: "state", value: state),
         ]
         return comps.url!
     }
 
-    /// Exchanges the pasted authorization code ("code#state" or bare code).
-    static func exchange(pastedCode: String, verifier: String) async throws -> (ImportedAccount, ImportedTokens) {
-        let code = pastedCode.trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(separator: "#").first.map(String.init) ?? ""
-        guard !code.isEmpty else { throw OAuthLoginError.badResponse("授权码为空") }
+    /// Exchanges Claude's pasted `code#state` value after validating that the
+    /// returned state belongs to this login attempt.
+    static func exchange(
+        pastedCode: String,
+        verifier: String,
+        expectedState: String
+    ) async throws -> (ImportedAccount, ImportedTokens) {
+        let code = try validatedPastedCode(pastedCode, expectedState: expectedState)
 
-        var req = URLRequest(url: ClaudeRefresher.tokenEndpoint)
-        req.httpMethod = "POST"
-        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        var comps = URLComponents()
-        comps.queryItems = [
-            .init(name: "grant_type", value: "authorization_code"),
-            .init(name: "code", value: code),
-            .init(name: "code_verifier", value: verifier),
-            .init(name: "client_id", value: ClaudeRefresher.clientID),
-            .init(name: "redirect_uri", value: redirectURI),
-            .init(name: "state", value: verifier),
-        ]
-        req.httpBody = (comps.percentEncodedQuery ?? "").data(using: .utf8)
-
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let access = root["access_token"] as? String else {
-            let detail = String(data: data, encoding: .utf8)?.prefix(200) ?? "未知错误"
-            throw OAuthLoginError.badResponse(String(detail))
-        }
-
-        let refresh = root["refresh_token"] as? String
-        let expiresIn = (root["expires_in"] as? Double) ?? Double(root["expires_in"] as? Int ?? 3600)
-        let expiresMillis = Int((Date().timeIntervalSince1970 + expiresIn) * 1000)
+        let response = try await OAuthHTTP.postForm(
+            to: ClaudeRefresher.tokenEndpoint,
+            parameters: [
+                (name: "grant_type", value: "authorization_code"),
+                (name: "code", value: code),
+                (name: "code_verifier", value: verifier),
+                (name: "client_id", value: ClaudeRefresher.clientID),
+                (name: "redirect_uri", value: redirectURI),
+                (name: "state", value: expectedState),
+            ]
+        )
+        let access = response.accessToken
+        let refresh = response.refreshToken
+        let expiresMillis = Int((Date().timeIntervalSince1970 + (response.expiresIn ?? 3600)) * 1000)
 
         // Token responses may carry account info; take what's there.
-        let accountInfo = root["account"] as? [String: Any]
-        let email = accountInfo?["email_address"] as? String ?? accountInfo?["email"] as? String
+        let accountInfo = response.account
+        let email = accountInfo?.emailAddress ?? accountInfo?.email
         let accountId = [
-            accountInfo?["uuid"],
-            accountInfo?["id"],
-            accountInfo?["account_uuid"],
-            accountInfo?["account_id"],
+            accountInfo?.uuid,
+            accountInfo?.id,
+            accountInfo?.accountUuid,
+            accountInfo?.accountId,
             email,
         ]
-            .compactMap { $0 as? String }
+            .compactMap { $0 }
             .first { !$0.isEmpty }
             ?? "token-\(tokenFingerprint(access))"
 
@@ -129,6 +150,33 @@ enum ClaudeOAuth {
             expiresAtMillis: expiresMillis
         )
         return (account, tokens)
+    }
+
+    /// Pure parsing entry point kept internal for unit tests.
+    static func parsePastedCode(_ pastedCode: String) throws -> (code: String, state: String) {
+        let value = pastedCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let separator = value.firstIndex(of: "#") else {
+            throw OAuthLoginError.missingState
+        }
+        let code = String(value[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let state = String(value[value.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { throw OAuthLoginError.badResponse("授权码为空") }
+        guard !state.isEmpty else { throw OAuthLoginError.missingState }
+        return (code, state)
+    }
+
+    /// Pure validation entry point: no network or credential persistence.
+    static func validatedPastedCode(_ pastedCode: String, expectedState: String) throws -> String {
+        let (code, returnedState) = try parsePastedCode(pastedCode)
+        guard statesMatch(returnedState, expectedState) else {
+            throw OAuthLoginError.stateMismatch
+        }
+        return code
+    }
+
+    private static func statesMatch(_ lhs: String, _ rhs: String) -> Bool {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        return SHA256.hash(data: Data(lhs.utf8)) == SHA256.hash(data: Data(rhs.utf8))
     }
 
     private static func tokenFingerprint(_ token: String) -> String {
@@ -162,29 +210,19 @@ enum CodexOAuth {
     }
 
     static func exchange(code: String, verifier: String) async throws -> (ImportedAccount, ImportedTokens) {
-        var req = URLRequest(url: URL(string: issuer + "/oauth/token")!)
-        req.httpMethod = "POST"
-        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        var comps = URLComponents()
-        comps.queryItems = [
-            .init(name: "grant_type", value: "authorization_code"),
-            .init(name: "code", value: code),
-            .init(name: "redirect_uri", value: redirectURI),
-            .init(name: "client_id", value: CodexRefresher.clientID),
-            .init(name: "code_verifier", value: verifier),
-        ]
-        req.httpBody = (comps.percentEncodedQuery ?? "").data(using: .utf8)
-
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let access = root["access_token"] as? String else {
-            let detail = String(data: data, encoding: .utf8)?.prefix(200) ?? "未知错误"
-            throw OAuthLoginError.badResponse(String(detail))
-        }
-
-        let refresh = root["refresh_token"] as? String
-        let idToken = root["id_token"] as? String
+        let response = try await OAuthHTTP.postForm(
+            to: URL(string: issuer + "/oauth/token")!,
+            parameters: [
+                (name: "grant_type", value: "authorization_code"),
+                (name: "code", value: code),
+                (name: "redirect_uri", value: redirectURI),
+                (name: "client_id", value: CodexRefresher.clientID),
+                (name: "code_verifier", value: verifier),
+            ]
+        )
+        let access = response.accessToken
+        let refresh = response.refreshToken
+        let idToken = response.idToken
 
         let idClaims = idToken.flatMap { NativeJWT.decodePayload($0) }
         let accessClaims = NativeJWT.decodePayload(access)
@@ -226,68 +264,188 @@ enum CodexOAuth {
 /// Minimal one-shot HTTP listener on localhost:1455 that captures the OAuth
 /// redirect, replies with a tiny success page, and hands back code + state.
 final class LoopbackServer: @unchecked Sendable {
+    enum CallbackRequest: Equatable {
+        case success(code: String)
+        case denied
+        case malformedCallback
+        case invalidState
+        case notFound
+        case malformedRequest
+    }
+
     private var listener: NWListener?
     private let queue = DispatchQueue(label: "quotaglass.loopback")
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private var completion: ((Result<(code: String, state: String), Error>) -> Void)?
+    private var expectedState: String?
+    private let maximumRequestBytes = 16_384
 
-    func start(completion: @escaping (Result<(code: String, state: String), Error>) -> Void) throws {
-        self.completion = completion
+    init() {
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    func start(
+        expectedState: String,
+        completion: @escaping (Result<(code: String, state: String), Error>) -> Void
+    ) throws {
         let listener: NWListener
         do {
-            listener = try NWListener(using: .tcp, on: 1455)
+            let parameters = NWParameters.tcp
+            // Accept IPv4/IPv6 loopback callbacks, but never expose the OAuth
+            // receiver to another device on the local network.
+            parameters.acceptLocalOnly = true
+            listener = try NWListener(using: parameters, on: 1455)
         } catch {
             throw OAuthLoginError.portInUse
         }
-        self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
             self?.handle(connection)
         }
         listener.stateUpdateHandler = { [weak self] state in
             if case .failed = state { self?.finish(.failure(OAuthLoginError.portInUse)) }
         }
-        listener.start(queue: queue)
+        // Every mutable field is confined to `queue`. Network callbacks already
+        // arrive there; synchronizing setup and cancellation removes the race
+        // between a dismissed login sheet and a late callback.
+        queue.sync {
+            self.completion = completion
+            self.expectedState = expectedState
+            self.listener = listener
+            listener.start(queue: queue)
+        }
     }
 
     func cancel() {
-        listener?.cancel()
-        listener = nil
-        completion = nil
+        let cleanup = {
+            self.listener?.cancel()
+            self.listener = nil
+            self.completion = nil
+            self.expectedState = nil
+        }
+        // `begin()` immediately binds a replacement listener on the same port,
+        // so cancellation must finish before it returns. Avoid a deadlock if a
+        // future caller invokes cancel from the callback queue itself.
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            cleanup()
+        } else {
+            queue.sync(execute: cleanup)
+        }
     }
 
     private func finish(_ result: Result<(code: String, state: String), Error>) {
+        dispatchPrecondition(condition: .onQueue(queue))
         guard let completion else { return }
         self.completion = nil
+        expectedState = nil
         listener?.cancel()
         listener = nil
         completion(result)
     }
 
     private func handle(_ connection: NWConnection) {
+        dispatchPrecondition(condition: .onQueue(queue))
         connection.start(queue: queue)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [weak self] data, _, _, _ in
-            guard let self, let data, let request = String(data: data, encoding: .utf8) else {
+        receiveRequest(on: connection, accumulated: Data())
+    }
+
+    private func receiveRequest(on connection: NWConnection, accumulated: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 4_096) { [weak self] data, _, isComplete, error in
+            guard let self else {
                 connection.cancel()
                 return
             }
-            // First line: GET /auth/callback?code=...&state=... HTTP/1.1
-            let firstLine = request.split(separator: "\r\n").first.map(String.init) ?? ""
-            let parts = firstLine.split(separator: " ")
-            let path = parts.count > 1 ? String(parts[1]) : ""
 
-            guard path.hasPrefix("/auth/callback"),
-                  let comps = URLComponents(string: "http://localhost\(path)"),
-                  let code = comps.queryItems?.first(where: { $0.name == "code" })?.value,
-                  let state = comps.queryItems?.first(where: { $0.name == "state" })?.value else {
-                self.respond(connection, body: "Not found", status: "404 Not Found")
+            var requestData = accumulated
+            if let data { requestData.append(data) }
+            guard requestData.count <= self.maximumRequestBytes else {
+                self.respond(connection, body: "Request too large", status: "413 Content Too Large")
                 return
             }
-            self.respond(
+
+            if requestData.range(of: Data("\r\n\r\n".utf8)) != nil {
+                guard let request = String(data: requestData, encoding: .utf8),
+                      let expectedState = self.expectedState else {
+                    self.respond(connection, body: "Bad request", status: "400 Bad Request")
+                    return
+                }
+                self.process(
+                    Self.parseRequest(request, expectedState: expectedState),
+                    expectedState: expectedState,
+                    connection: connection
+                )
+            } else if isComplete || error != nil {
+                self.respond(connection, body: "Incomplete request", status: "400 Bad Request")
+            } else {
+                self.receiveRequest(on: connection, accumulated: requestData)
+            }
+        }
+    }
+
+    private func process(_ callback: CallbackRequest, expectedState: String, connection: NWConnection) {
+        switch callback {
+        case .success(let code):
+            respond(
                 connection,
                 body: "<html><body style=\"font-family:-apple-system;text-align:center;padding-top:80px\"><h2>登录成功</h2><p>可以关掉这个页面，回到 QuotaGlass。</p></body></html>",
                 status: "200 OK"
             )
-            self.finish(.success((code: code, state: state)))
+            finish(.success((code: code, state: expectedState)))
+        case .denied:
+            respond(connection, body: "登录已取消，可以关闭此页面。", status: "200 OK")
+            finish(.failure(OAuthLoginError.cancelled))
+        case .malformedCallback:
+            respond(connection, body: "授权回调缺少必要参数。", status: "400 Bad Request")
+            finish(.failure(OAuthLoginError.badResponse("授权回调缺少必要参数")))
+        case .invalidState:
+            // A stray or malicious request must not consume the one-shot login.
+            respond(connection, body: "Invalid OAuth state", status: "400 Bad Request")
+        case .notFound:
+            respond(connection, body: "Not found", status: "404 Not Found")
+        case .malformedRequest:
+            respond(connection, body: "Bad request", status: "400 Bad Request")
         }
+    }
+
+    static func parseRequest(_ request: String, expectedState: String) -> CallbackRequest {
+        guard let firstLine = request.components(separatedBy: "\r\n").first else {
+            return .malformedRequest
+        }
+        let parts = firstLine.split(separator: " ", omittingEmptySubsequences: true)
+        guard parts.count == 3,
+              parts[0] == "GET",
+              parts[2] == "HTTP/1.1" || parts[2] == "HTTP/1.0" else {
+            return .malformedRequest
+        }
+        let target = String(parts[1])
+        guard let components = URLComponents(string: "http://localhost\(target)"),
+              components.path == "/auth/callback" else {
+            return .notFound
+        }
+
+        let items = components.queryItems ?? []
+        let stateItems = items.filter { $0.name == "state" }
+        let codeItems = items.filter { $0.name == "code" }
+        let errorItems = items.filter { $0.name == "error" }
+        guard stateItems.count == 1,
+              let returnedState = stateItems[0].value,
+              statesMatch(returnedState, expectedState) else {
+            return .invalidState
+        }
+        guard !(codeItems.isEmpty == false && errorItems.isEmpty == false) else {
+            return .malformedCallback
+        }
+        if codeItems.count == 1, let code = codeItems[0].value, !code.isEmpty {
+            return .success(code: code)
+        }
+        if errorItems.count == 1, let error = errorItems[0].value {
+            return error == "access_denied" ? .denied : .malformedCallback
+        }
+        return .malformedCallback
+    }
+
+    private static func statesMatch(_ lhs: String, _ rhs: String) -> Bool {
+        guard !lhs.isEmpty, !rhs.isEmpty else { return false }
+        return SHA256.hash(data: Data(lhs.utf8)) == SHA256.hash(data: Data(rhs.utf8))
     }
 
     private func respond(_ connection: NWConnection, body: String, status: String) {

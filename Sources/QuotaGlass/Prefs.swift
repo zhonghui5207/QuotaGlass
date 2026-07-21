@@ -1,6 +1,6 @@
 import Foundation
 import ServiceManagement
-import UserNotifications
+@preconcurrency import UserNotifications
 
 extension Notification.Name {
     static let qgPrefsChanged = Notification.Name("QGPrefsChanged")
@@ -42,7 +42,11 @@ final class PrefsStore: ObservableObject {
     @Published var notifyLowQuota: Bool {
         didSet {
             defaults.set(notifyLowQuota, forKey: "notifyLowQuota")
-            if notifyLowQuota { QuotaNotifier.requestAuthorization() }
+            if notifyLowQuota {
+                QuotaNotifier.requestAuthorization()
+            } else {
+                QuotaNotifier.shared.reset()
+            }
         }
     }
 
@@ -60,6 +64,7 @@ final class PrefsStore: ObservableObject {
         notifyLowQuota = defaults.object(forKey: "notifyLowQuota") as? Bool ?? true
         let stored = defaults.integer(forKey: "refreshInterval")
         refreshInterval = stored == 0 ? 300 : stored
+        if notifyLowQuota { QuotaNotifier.requestAuthorization() }
     }
 
     func archiveAccount(key: String) {
@@ -93,13 +98,44 @@ final class QuotaNotifier {
     static let shared = QuotaNotifier()
     /// Highest tier already notified per account (1 = <30%, 2 = <10%).
     private var notifiedTier: [String: Int] = [:]
+    /// Prevents duplicate submissions while UNUserNotificationCenter is still
+    /// processing a previous request for the same account.
+    private var pendingTier: [String: Int] = [:]
+    private var cycleGeneration: [String: Int] = [:]
 
     /// UNUserNotificationCenter traps when running as a bare executable.
-    static var available: Bool { Bundle.main.bundleIdentifier != nil }
+    static var available: Bool {
+        Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app"
+    }
 
     static func requestAuthorization() {
         guard available else { return }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+                    if let error {
+                        NSLog("QuotaGlass notification authorization failed: %@", error.localizedDescription)
+                    } else if !granted {
+                        NSLog("QuotaGlass notification authorization was declined")
+                    }
+                }
+            case .denied:
+                NSLog("QuotaGlass notifications are disabled in System Settings")
+            case .authorized, .provisional, .ephemeral:
+                break
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    func reset() {
+        let keys = Set(notifiedTier.keys).union(pendingTier.keys)
+        for key in keys { cycleGeneration[key, default: 0] &+= 1 }
+        notifiedTier.removeAll()
+        pendingTier.removeAll()
     }
 
     func evaluate(_ quotas: [QuotaSnapshot]) {
@@ -107,29 +143,50 @@ final class QuotaNotifier {
         for quota in quotas where !quota.isStale {
             if quota.isAPIUsage { continue }
             let key = accountKey(quota)
-            let remaining = quota.fiveHourRemaining
+            guard let remaining = quota.fiveHourRemaining else { continue }
             if remaining >= 35 {
-                notifiedTier[key] = 0
+                if notifiedTier[key] != nil || pendingTier[key] != nil {
+                    cycleGeneration[key, default: 0] &+= 1
+                }
+                notifiedTier.removeValue(forKey: key)
+                pendingTier.removeValue(forKey: key)
                 continue
             }
             let tier = remaining < 10 ? 2 : (remaining < 30 ? 1 : 0)
-            guard tier > (notifiedTier[key] ?? 0) else { continue }
-            notifiedTier[key] = tier
+            let submittedTier = max(notifiedTier[key] ?? 0, pendingTier[key] ?? 0)
+            guard tier > submittedTier else { continue }
+            pendingTier[key] = tier
+            let generation = cycleGeneration[key, default: 0]
             let name = AliasStore.shared.alias(for: key) ?? quota.displaySubtitle
             send(
                 title: "\(displayTitle(quota)) · \(name) 额度告警",
-                body: "5 小时窗口剩余 \(Int(remaining.rounded()))%，\(quota.fiveHourReset) 重置"
+                body: "5 小时窗口剩余 \(Int(remaining.rounded()))%，\(quota.fiveHourReset) 重置",
+                accountKey: key,
+                tier: tier,
+                generation: generation
             )
         }
     }
 
-    private func send(title: String, body: String) {
+    private func send(title: String, body: String, accountKey: String, tier: Int, generation: Int) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        )
+        ) { [weak self] error in
+            Task { @MainActor [weak self] in
+                guard let self, self.cycleGeneration[accountKey, default: 0] == generation else { return }
+                if self.pendingTier[accountKey] == tier {
+                    self.pendingTier.removeValue(forKey: accountKey)
+                }
+                if let error {
+                    NSLog("QuotaGlass notification delivery failed: %@", error.localizedDescription)
+                    return
+                }
+                self.notifiedTier[accountKey] = max(self.notifiedTier[accountKey] ?? 0, tier)
+            }
+        }
     }
 }

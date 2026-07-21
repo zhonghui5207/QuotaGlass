@@ -10,10 +10,13 @@ struct ClaudeLoginSheet: View {
     let store: QuotaStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var verifier = PKCE.verifier()
+    @State private var verifier = ""
+    @State private var state = ""
     @State private var pastedCode = ""
     @State private var working = false
     @State private var errorText: String?
+    @State private var loginTask: Task<Void, Never>?
+    @State private var generation = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -24,8 +27,8 @@ struct ClaudeLoginSheet: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
-            Button("打开浏览器授权") {
-                NSWorkspace.shared.open(ClaudeOAuth.authorizeURL(verifier: verifier))
+            Button(verifier.isEmpty ? "准备浏览器授权" : "重新打开浏览器授权") {
+                beginAuthorization()
             }
 
             TextField("粘贴授权码（形如 xxxx#yyyy）", text: $pastedCode)
@@ -40,30 +43,88 @@ struct ClaudeLoginSheet: View {
 
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
+                Button("取消") { cancelAndDismiss() }
                 Button(working ? "登录中…" : "完成登录") { finish() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(working || pastedCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(
+                        working
+                            || verifier.isEmpty
+                            || state.isEmpty
+                            || pastedCode.trimmingCharacters(in: .whitespaces).isEmpty
+                    )
             }
         }
         .padding(20)
         .frame(width: 420)
+        .onAppear {
+            if verifier.isEmpty { beginAuthorization() }
+        }
+        .onDisappear(perform: invalidateAttempt)
     }
 
+    @MainActor
+    private func beginAuthorization() {
+        invalidateAttempt()
+        errorText = nil
+        working = false
+        pastedCode = ""
+
+        do {
+            verifier = try PKCE.generateVerifier()
+            state = try PKCE.generateState()
+            NSWorkspace.shared.open(ClaudeOAuth.authorizeURL(verifier: verifier, state: state))
+        } catch {
+            verifier = ""
+            state = ""
+            errorText = error.localizedDescription
+        }
+    }
+
+    @MainActor
     private func finish() {
+        let attempt = generation
+        let attemptVerifier = verifier
+        let attemptState = state
+        let code = pastedCode
         working = true
         errorText = nil
-        Task { @MainActor in
+
+        loginTask?.cancel()
+        loginTask = Task { @MainActor in
             do {
-                let (account, tokens) = try await ClaudeOAuth.exchange(pastedCode: pastedCode, verifier: verifier)
-                ImportedAccountStore.add(account, tokens: tokens)
-                await store.refresh()
+                let (account, tokens) = try await ClaudeOAuth.exchange(
+                    pastedCode: code,
+                    verifier: attemptVerifier,
+                    expectedState: attemptState
+                )
+                try Task.checkCancellation()
+                guard attempt == generation else { return }
+                try ImportedAccountStore.addReporting(account, tokens: tokens)
+                guard attempt == generation else { return }
+                Task { await store.forceRefresh() }
                 dismiss()
+            } catch is CancellationError {
+                guard attempt == generation else { return }
+                working = false
             } catch {
+                guard attempt == generation else { return }
                 errorText = error.localizedDescription
                 working = false
             }
         }
+    }
+
+    @MainActor
+    private func cancelAndDismiss() {
+        invalidateAttempt()
+        dismiss()
+    }
+
+    @MainActor
+    private func invalidateAttempt() {
+        generation &+= 1
+        loginTask?.cancel()
+        loginTask = nil
     }
 }
 
@@ -73,12 +134,14 @@ struct CodexLoginSheet: View {
     let store: QuotaStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var verifier = PKCE.verifier()
-    @State private var state = PKCE.verifier()
+    @State private var verifier = ""
+    @State private var state = ""
     @State private var server: LoopbackServer?
     @State private var statusText = "等待浏览器授权…"
     @State private var errorText: String?
     @State private var finished = false
+    @State private var loginTask: Task<Void, Never>?
+    @State private var generation = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -104,63 +167,121 @@ struct CodexLoginSheet: View {
 
             HStack {
                 Button("重新打开浏览器") {
-                    NSWorkspace.shared.open(CodexOAuth.authorizeURL(verifier: verifier, state: state))
+                    begin()
                 }
                 Spacer()
-                Button("取消") {
-                    server?.cancel()
-                    dismiss()
-                }
+                Button("取消") { cancelAndDismiss() }
             }
         }
         .padding(20)
         .frame(width: 420)
         .onAppear(perform: begin)
-        .onDisappear { server?.cancel() }
+        .onDisappear(perform: invalidateAttempt)
     }
 
+    @MainActor
     private func begin() {
+        invalidateAttempt()
+        let attempt = generation
+        errorText = nil
+        finished = false
+        statusText = "等待浏览器授权…"
+
+        do {
+            verifier = try PKCE.generateVerifier()
+            state = try PKCE.generateState()
+        } catch {
+            verifier = ""
+            state = ""
+            errorText = error.localizedDescription
+            statusText = "无法准备安全登录"
+            return
+        }
+
+        let attemptVerifier = verifier
+        let attemptState = state
         let server = LoopbackServer()
         self.server = server
         do {
-            try server.start { result in
-                Task { @MainActor in handleCallback(result) }
+            try server.start(expectedState: attemptState) { result in
+                Task { @MainActor in
+                    handleCallback(
+                        result,
+                        generation: attempt,
+                        verifier: attemptVerifier,
+                        expectedState: attemptState
+                    )
+                }
             }
         } catch {
             errorText = error.localizedDescription
             statusText = "无法启动本地回调"
+            self.server = nil
             return
         }
-        NSWorkspace.shared.open(CodexOAuth.authorizeURL(verifier: verifier, state: state))
+        NSWorkspace.shared.open(CodexOAuth.authorizeURL(verifier: attemptVerifier, state: attemptState))
     }
 
     @MainActor
-    private func handleCallback(_ result: Result<(code: String, state: String), Error>) {
+    private func handleCallback(
+        _ result: Result<(code: String, state: String), Error>,
+        generation attempt: Int,
+        verifier attemptVerifier: String,
+        expectedState: String
+    ) {
+        guard attempt == generation else { return }
+        server = nil
         switch result {
         case .failure(let error):
             errorText = error.localizedDescription
             statusText = "登录失败"
         case .success(let callback):
-            guard callback.state == state else {
+            guard callback.state == expectedState else {
                 errorText = OAuthLoginError.stateMismatch.localizedDescription
                 statusText = "登录失败"
                 return
             }
             statusText = "正在换取 token…"
-            Task { @MainActor in
+            loginTask?.cancel()
+            loginTask = Task { @MainActor in
                 do {
-                    let (account, tokens) = try await CodexOAuth.exchange(code: callback.code, verifier: verifier)
-                    ImportedAccountStore.add(account, tokens: tokens)
+                    let (account, tokens) = try await CodexOAuth.exchange(
+                        code: callback.code,
+                        verifier: attemptVerifier
+                    )
+                    try Task.checkCancellation()
+                    guard attempt == generation else { return }
+                    try ImportedAccountStore.addReporting(account, tokens: tokens)
                     finished = true
                     statusText = "登录成功"
-                    await store.refresh()
+                    guard attempt == generation else { return }
+                    Task { await store.forceRefresh() }
                     dismiss()
+                } catch is CancellationError {
+                    guard attempt == generation else { return }
+                    statusText = "登录已取消"
                 } catch {
+                    guard attempt == generation else { return }
                     errorText = error.localizedDescription
                     statusText = "登录失败"
                 }
             }
         }
+    }
+
+    @MainActor
+    private func cancelAndDismiss() {
+        invalidateAttempt()
+        dismiss()
+    }
+
+    @MainActor
+    private func invalidateAttempt() {
+        generation &+= 1
+        server?.cancel()
+        server = nil
+        loginTask?.cancel()
+        loginTask = nil
     }
 }
 
@@ -174,6 +295,7 @@ struct SakanaLoginSheet: View {
     @State private var statusRequest = 0
     @State private var saveRequest = 0
     @State private var statusText = "尚未检查登录状态"
+    @State private var generation = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -188,7 +310,7 @@ struct SakanaLoginSheet: View {
                             .lineLimit(2)
                     }
                     Spacer()
-                    Button("取消") { dismiss() }
+                    Button("取消") { cancelAndDismiss() }
                     Button("完成") {
                         statusText = "正在保存页面用量…"
                         saveRequest += 1
@@ -230,13 +352,24 @@ struct SakanaLoginSheet: View {
                 statusRequest: $statusRequest,
                 saveRequest: $saveRequest,
                 statusText: $statusText,
+                generation: $generation,
                 onFinish: {
+                    generation &+= 1
                     dismiss()
-                    Task { await store.refresh() }
+                    Task { await store.forceRefresh() }
                 }
             )
                 .frame(width: 920, height: 680)
         }
+        .onDisappear {
+            generation &+= 1
+        }
+    }
+
+    @MainActor
+    private func cancelAndDismiss() {
+        generation &+= 1
+        dismiss()
     }
 
     private func openPastedLoginURL() {
@@ -260,13 +393,21 @@ private struct SakanaWebView: NSViewRepresentable {
     @Binding var statusRequest: Int
     @Binding var saveRequest: Int
     @Binding var statusText: String
+    @Binding var generation: Int
     let onFinish: () -> Void
 
-    final class Coordinator {
+    final class Coordinator: NSObject, WKNavigationDelegate {
         weak var webView: WKWebView?
         var lastLoadedRequest: URL?
         var lastStatusRequest = 0
         var lastSaveRequest = 0
+        var generation = 0
+        var isActive = true
+        var navigationSerial = 0
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation?) {
+            navigationSerial &+= 1
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -279,11 +420,17 @@ private struct SakanaWebView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         context.coordinator.webView = webView
         context.coordinator.lastLoadedRequest = url
+        context.coordinator.generation = generation
+        context.coordinator.isActive = true
+        webView.navigationDelegate = context.coordinator
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.generation = generation
+        context.coordinator.isActive = true
+
         if let requestedURL, context.coordinator.lastLoadedRequest != requestedURL {
             context.coordinator.lastLoadedRequest = requestedURL
             webView.load(URLRequest(url: requestedURL))
@@ -294,47 +441,98 @@ private struct SakanaWebView: NSViewRepresentable {
 
         if context.coordinator.lastStatusRequest != statusRequest {
             context.coordinator.lastStatusRequest = statusRequest
-            updateStatus(from: webView)
+            updateStatus(from: webView, coordinator: context.coordinator)
         }
 
         if context.coordinator.lastSaveRequest != saveRequest {
             context.coordinator.lastSaveRequest = saveRequest
-            saveVisibleBilling(from: webView)
+            saveVisibleBilling(from: webView, coordinator: context.coordinator)
         }
     }
 
-    private func updateStatus(from webView: WKWebView) {
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.isActive = false
+        coordinator.generation &+= 1
+        coordinator.webView = nil
+        webView.navigationDelegate = nil
+        webView.stopLoading()
+    }
+
+    private func updateStatus(from webView: WKWebView, coordinator: Coordinator) {
+        let requestGeneration = coordinator.generation
+        let navigationSerial = coordinator.navigationSerial
         let currentURL = webView.url?.absoluteString ?? "about:blank"
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
             let sharedCookies = SakanaConsoleSession.sharedStorageCookies()
-            let relevant = SakanaConsoleSession.relevantCookies(from: SakanaConsoleSession.deduplicate(cookies + sharedCookies))
+            let relevant = SakanaConsoleSession.relevantCookies(
+                from: SakanaConsoleSession.deduplicate(sharedCookies + cookies)
+            )
             let names = relevant.map(\.name).sorted().joined(separator: ", ")
             let cookieText = relevant.isEmpty ? "无 Sakana cookie" : "\(relevant.count) 个 Sakana cookie: \(names)"
             webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, _ in
                 let parsed = (value as? String).flatMap(SakanaUsage.parseConsoleBilling)
                 let parseText = parsed.map { "可解析：\($0.primaryText)，\($0.secondaryText ?? "Weekly 已读取")" } ?? "未解析到页面用量"
                 DispatchQueue.main.async {
+                    guard generation == requestGeneration,
+                          coordinator.isActive,
+                          coordinator.generation == requestGeneration,
+                          coordinator.navigationSerial == navigationSerial else { return }
                     statusText = "当前页：\(currentURL)；WebKit \(cookies.count)，共享 \(sharedCookies.count)；\(cookieText)；\(parseText)"
                 }
             }
         }
     }
 
-    private func saveVisibleBilling(from webView: WKWebView) {
+    private func saveVisibleBilling(from webView: WKWebView, coordinator: Coordinator) {
+        let requestGeneration = coordinator.generation
+        let navigationSerial = coordinator.navigationSerial
         webView.evaluateJavaScript("document.body ? document.body.innerText : ''") { value, error in
             let text = value as? String ?? ""
-            DispatchQueue.main.async {
-                if let error {
+            if let error {
+                DispatchQueue.main.async {
+                    guard generation == requestGeneration,
+                          coordinator.isActive,
+                          coordinator.generation == requestGeneration,
+                          coordinator.navigationSerial == navigationSerial else { return }
                     statusText = "读取页面失败：\(error.localizedDescription)"
-                    return
                 }
-                guard let usage = SakanaUsage.parseConsoleBilling(text) else {
+                return
+            }
+            guard let usage = SakanaUsage.parseConsoleBilling(text) else {
+                DispatchQueue.main.async {
+                    guard generation == requestGeneration,
+                          coordinator.isActive,
+                          coordinator.generation == requestGeneration,
+                          coordinator.navigationSerial == navigationSerial else { return }
                     statusText = "没能从当前页面解析到用量，请确认 Billing 页已经显示 Usage limit。"
-                    return
                 }
-                SakanaUsageCache.save(usage)
-                statusText = "已保存：\(usage.primaryText)，\(usage.secondaryText ?? "Weekly 已读取")"
-                onFinish()
+                return
+            }
+
+            webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { webCookies in
+                let cookies = SakanaConsoleSession.cookies(
+                    for: SakanaUsage.billingEndpoint,
+                    from: SakanaConsoleSession.deduplicate(
+                        SakanaConsoleSession.sharedStorageCookies() + webCookies
+                    )
+                )
+                let sessionKey = cookies.isEmpty ? nil : SakanaConsoleSession.fingerprint(from: cookies)
+                DispatchQueue.main.async {
+                    guard generation == requestGeneration,
+                          coordinator.isActive,
+                          coordinator.generation == requestGeneration else { return }
+                    guard coordinator.navigationSerial == navigationSerial else {
+                        statusText = "页面已发生跳转，请在 Billing 页重新保存。"
+                        return
+                    }
+                    guard let sessionKey else {
+                        statusText = "页面已有用量，但没有找到可复用的 Sakana 登录会话。"
+                        return
+                    }
+                    SakanaUsageCache.save(usage, sessionKey: sessionKey)
+                    statusText = "已保存：\(usage.primaryText)，\(usage.secondaryText ?? "Weekly 已读取")"
+                    onFinish()
+                }
             }
         }
     }

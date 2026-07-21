@@ -14,6 +14,11 @@ let package = Package(
             name: "QuotaGlass",
             path: "Sources/QuotaGlass",
             resources: [.process("Resources")]
+        ),
+        .testTarget(
+            name: "QuotaGlassTests",
+            dependencies: ["QuotaGlass"],
+            path: "Tests/QuotaGlassTests"
         )
     ]
 )

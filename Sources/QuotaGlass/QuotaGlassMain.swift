@@ -70,7 +70,9 @@ struct QuotaGlassMain {
             RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
         // Dark moss background standing in for a wallpaper behind the clear glass.
-        let snapshotView = PopoverRootView(store: store)
+        let activity = PopoverActivity()
+        activity.isVisible = true
+        let snapshotView = PopoverRootView(store: store, activity: activity)
             .background(Color(red: 0.18, green: 0.24, blue: 0.16))
         let renderer = ImageRenderer(content: snapshotView)
         renderer.scale = 2
@@ -106,16 +108,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var eventMonitor: Any?
     private var settingsWindow: NSWindow?
     private var refreshTimer: Timer?
+    private var prefsObserver: (any NSObjectProtocol)?
+    private var wakeObserver: (any NSObjectProtocol)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         panel = GlassPanelController(store: store)
+        // Construct preferences at launch so an enabled notification setting
+        // immediately checks/request system authorization, even before the
+        // first quota refresh completes.
+        _ = PrefsStore.shared
         setupStatusItem()
         setupDismissMonitor()
         setupAutoRefresh()
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings), name: .qgOpenSettings, object: nil
         )
-        NotificationCenter.default.addObserver(
+        prefsObserver = NotificationCenter.default.addObserver(
             forName: .qgPrefsChanged, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.updateStatusTitle() }
@@ -131,6 +139,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        if let prefsObserver { NotificationCenter.default.removeObserver(prefsObserver) }
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         refreshTimer?.invalidate()
     }
 
@@ -148,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         RunLoop.main.add(timer, forMode: .common)
         refreshTimer = timer
 
-        NSWorkspace.shared.notificationCenter.addObserver(
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in await self?.store.refreshIfStale() }
@@ -180,12 +190,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.close()
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 500, height: 450),
-                styleMask: [.titled, .closable],
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 500),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
             window.title = "QuotaGlass 设置"
+            window.minSize = NSSize(width: 460, height: 360)
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: SettingsRootView(store: store))
             window.center()

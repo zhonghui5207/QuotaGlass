@@ -39,10 +39,15 @@ private func logoName(_ snapshot: QuotaSnapshot) -> String {
 
 // MARK: - Root
 
+@MainActor
+final class PopoverActivity: ObservableObject {
+    @Published var isVisible = false
+}
+
 struct PopoverRootView: View {
     @ObservedObject var store: QuotaStore
+    @ObservedObject var activity: PopoverActivity
     @ObservedObject private var aliases = AliasStore.shared
-    @State private var refreshRotation: Double = 0
 
     var body: some View {
         // On macOS 26 the hosting NSGlassEffectView supplies the entire widget
@@ -95,23 +100,38 @@ struct PopoverRootView: View {
                 Text("用量")
                     .font(Theme.font(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.textPrimary)
-                Text(subtitle)
-                    .font(Theme.font(size: 11))
-                    .foregroundStyle(Theme.textSecondary)
-                    .monospacedDigit()
-                    .lineLimit(1)
+                Group {
+                    if activity.isVisible {
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(subtitle(at: context.date))
+                        }
+                    } else {
+                        Text(subtitle(at: .now))
+                    }
+                }
+                .font(Theme.font(size: 11))
+                .foregroundStyle(Theme.textSecondary)
+                .monospacedDigit()
+                .lineLimit(1)
             }
 
             Spacer()
 
             Button(action: refresh) {
-                Image(systemName: "arrow.clockwise")
-                    .font(Theme.font(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.textSecondary)
-                    .rotationEffect(.degrees(refreshRotation))
-                    .animation(.easeInOut(duration: 0.7), value: refreshRotation)
+                if store.state == .loading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Theme.textSecondary)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                        .font(Theme.font(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                }
             }
             .buttonStyle(PopoverIconButtonStyle())
+            .disabled(store.state == .loading)
+            .accessibilityLabel("刷新用量")
+            .help(store.state == .loading ? "正在刷新所有账号用量" : "立即刷新所有账号用量")
 
             Button {
                 NotificationCenter.default.post(name: .qgOpenSettings, object: nil)
@@ -121,6 +141,8 @@ struct PopoverRootView: View {
                     .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
+            .accessibilityLabel("打开设置")
+            .help("打开账号与显示设置")
 
             Button { NSApp.terminate(nil) } label: {
                 Image(systemName: "power")
@@ -128,15 +150,17 @@ struct PopoverRootView: View {
                     .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(PopoverIconButtonStyle())
+            .accessibilityLabel("退出 QuotaGlass")
+            .help("退出 QuotaGlass")
         }
         .padding(.top, 15)
         .padding(.horizontal, 13)
         .padding(.bottom, 10)
     }
 
-    private var subtitle: String {
+    private func subtitle(at now: Date) -> String {
         guard let last = store.lastRefresh else { return "等待数据" }
-        let seconds = max(0, Int(Date().timeIntervalSince(last)))
+        let seconds = max(0, Int(now.timeIntervalSince(last)))
         let age: String
         if seconds < 60 { age = "\(seconds)s" }
         else if seconds < 3600 { age = "\(seconds / 60)m" }
@@ -146,7 +170,6 @@ struct PopoverRootView: View {
     }
 
     private func refresh() {
-        refreshRotation += 360
         Task { await store.refresh() }
     }
 
@@ -213,21 +236,30 @@ struct PopoverRootView: View {
 private struct ServiceBlockView: View {
     let snapshot: QuotaSnapshot
 
-    private var fiveHourTint: Color { Theme.tint(remaining: snapshot.fiveHourRemaining) }
-    private var weeklyTint: Color { Theme.tint(remaining: snapshot.weeklyRemaining) }
+    private var fiveHourTint: Color {
+        snapshot.fiveHourRemaining.map { Theme.tint(remaining: $0) } ?? Theme.textSecondary
+    }
+    private var weeklyTint: Color {
+        snapshot.weeklyRemaining.map { Theme.tint(remaining: $0) } ?? Theme.textSecondary
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             headerRow
-            if shouldUseQuotaLayout {
+            if snapshot.isAPIUsage {
+                // API billing is useful independently of any rate-limit
+                // windows. Providers that expose both render the two window
+                // rows underneath instead of replacing the billing summary.
+                apiBodyRow
+                if let remaining = snapshot.fiveHourRemaining {
+                    apiQuotaRow(label: "5H", remaining: remaining, reset: snapshot.fiveHourReset, tint: fiveHourTint)
+                }
+                if let remaining = snapshot.weeklyRemaining {
+                    apiQuotaRow(label: "WK", remaining: remaining, reset: snapshot.weeklyReset, tint: weeklyTint)
+                }
+            } else {
                 bodyRow
                 weeklyRow
-            } else {
-                apiBodyRow
-                if hasWindowData {
-                    apiQuotaRow(label: "5H", remaining: snapshot.fiveHourRemaining, reset: snapshot.fiveHourReset, tint: fiveHourTint)
-                    apiQuotaRow(label: "WK", remaining: snapshot.weeklyRemaining, reset: snapshot.weeklyReset, tint: weeklyTint)
-                }
             }
         }
         .padding(.horizontal, 8)
@@ -257,11 +289,13 @@ private struct ServiceBlockView: View {
                 Text("旧数据")
                     .font(Theme.font(size: 9))
                     .foregroundStyle(.orange)
+                    .help(snapshot.refreshErrorText ?? "本轮没有取得实时数据")
             }
             if let warningText = snapshot.warningText {
                 Text(warningText)
                     .font(Theme.font(size: 9))
                     .foregroundStyle(.orange)
+                    .help(snapshot.refreshErrorText ?? warningText)
             }
         }
     }
@@ -270,14 +304,16 @@ private struct ServiceBlockView: View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .center, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    Text("\(Int(snapshot.fiveHourRemaining.rounded()))")
+                    Text(percentageText(snapshot.fiveHourRemaining, includesSymbol: false))
                         .font(Theme.font(size: 31, weight: .semibold))
                         .monospacedDigit()
                         .foregroundStyle(fiveHourTint)
                         .lineLimit(1)
-                    Text("%")
-                        .font(Theme.font(size: 16, weight: .semibold))
-                        .foregroundStyle(fiveHourTint.opacity(0.75))
+                    if snapshot.fiveHourRemaining != nil {
+                        Text("%")
+                            .font(Theme.font(size: 16, weight: .semibold))
+                            .foregroundStyle(fiveHourTint.opacity(0.75))
+                    }
                 }
                 .fixedSize()
 
@@ -290,7 +326,7 @@ private struct ServiceBlockView: View {
             .frame(width: 82, alignment: .center)
 
             VStack(alignment: .leading, spacing: 8) {
-                ProgressBar(value: snapshot.fiveHourRemaining / 100, tint: fiveHourTint, height: 6)
+                ProgressBar(value: (snapshot.fiveHourRemaining ?? 0) / 100, tint: fiveHourTint, height: 6)
 
                 HStack(spacing: 5) {
                     Text("重置")
@@ -315,9 +351,9 @@ private struct ServiceBlockView: View {
                 .foregroundStyle(Theme.textTertiary)
                 .frame(width: 36, alignment: .leading)
 
-            ProgressBar(value: snapshot.weeklyRemaining / 100, tint: weeklyTint, height: 2.5)
+            ProgressBar(value: (snapshot.weeklyRemaining ?? 0) / 100, tint: weeklyTint, height: 2.5)
 
-            Text("\(Int(snapshot.weeklyRemaining.rounded()))%")
+            Text(percentageText(snapshot.weeklyRemaining))
                 .font(Theme.font(size: 10.5, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(weeklyTint)
@@ -364,14 +400,6 @@ private struct ServiceBlockView: View {
         }
     }
 
-    private var hasWindowData: Bool {
-        snapshot.fiveHourReset != "无" || snapshot.weeklyReset != "无" || snapshot.fiveHourUsed > 0 || snapshot.weeklyUsed > 0
-    }
-
-    private var shouldUseQuotaLayout: Bool {
-        !snapshot.isAPIUsage || hasWindowData
-    }
-
     private func apiQuotaRow(label: String, remaining: Double, reset: String, tint: Color) -> some View {
         HStack(spacing: 10) {
             Text(label)
@@ -393,6 +421,11 @@ private struct ServiceBlockView: View {
         }
     }
 
+    private func percentageText(_ value: Double?, includesSymbol: Bool = true) -> String {
+        guard let value else { return "—" }
+        return "\(Int(value.rounded()))\(includesSymbol ? "%" : "")"
+    }
+
 }
 
 // MARK: - ProgressBar (cc-bar)
@@ -411,25 +444,27 @@ struct ProgressBar: View {
                         Capsule()
                             .strokeBorder(Color.white.opacity(0.20), lineWidth: 0.5)
                     )
-                Capsule()
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.22),
-                                tint.opacity(0.76),
-                                tint.opacity(0.48)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+                if clamped > 0 {
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(0.22),
+                                    tint.opacity(0.76),
+                                    tint.opacity(0.48)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
-                    )
-                    .frame(width: max(height, proxy.size.width * clamped))
-                    .overlay(alignment: .top) {
-                        Capsule()
-                            .fill(Color.white.opacity(0.12))
-                            .frame(height: max(1, height * 0.26))
-                            .padding(.horizontal, 1)
-                    }
+                        .frame(width: max(height, proxy.size.width * clamped))
+                        .overlay(alignment: .top) {
+                            Capsule()
+                                .fill(Color.white.opacity(0.12))
+                                .frame(height: max(1, height * 0.26))
+                                .padding(.horizontal, 1)
+                        }
+                }
             }
         }
         .frame(height: height)

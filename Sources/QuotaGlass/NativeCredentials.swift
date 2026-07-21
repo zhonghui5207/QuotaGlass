@@ -23,12 +23,26 @@ struct NativeCodexAccount {
     var email: String?
     var planType: String?
     var accountId: String?
+    var userId: String? = nil
     var accessToken: String?
     var refreshToken: String?
     var idToken: String?
     /// Set when this account came from the in-app OAuth login; token refreshes
     /// then write back to ImportedAccountStore instead of auth.json.
     var importedId: String?
+    /// In-app copies of this same CLI account. A CLI token rotation is mirrored
+    /// into them so the redundant credential does not become a stale ghost.
+    var linkedImportedIDs: [String] = []
+    var credentialWarning: String? = nil
+
+    /// Workspace/account IDs are shared by multiple people on Team plans. Keep
+    /// the user component whenever the token provides it so identities, aliases,
+    /// and imported-account de-duplication remain user-specific.
+    var stableAccountID: String? {
+        guard let accountId, !accountId.isEmpty else { return nil }
+        if let userId, !userId.isEmpty { return "\(accountId):\(userId)" }
+        return accountId
+    }
 }
 
 struct NativeClaudeAccount {
@@ -36,11 +50,16 @@ struct NativeClaudeAccount {
     var source: Source
     /// Which keychain service this came from, so refreshes write back to the right item.
     var keychainService: String?
+    /// Generic-password account attribute paired with `keychainService`.
+    var keychainAccount: String? = nil
     var email: String?
     var subscriptionType: String?
     var expiresAt: Date?
     var accessToken: String?
     var refreshToken: String?
+    /// Imported credentials deduplicated against this local credential.
+    var linkedImportedIDs: [String] = []
+    var credentialWarning: String? = nil
 
     /// Short label distinguishing accounts when no email is present.
     var displayAccount: String {
@@ -102,11 +121,14 @@ enum CodexAuthReader {
         let accountId = (tokens["account_id"] as? String)
             ?? authClaim("chatgpt_account_id", accessClaims)
             ?? authClaim("chatgpt_account_id", idClaims)
+        let userId = authClaim("chatgpt_user_id", accessClaims)
+            ?? authClaim("chatgpt_user_id", idClaims)
 
         return NativeCodexAccount(
             email: email,
             planType: planType,
             accountId: accountId,
+            userId: userId,
             accessToken: accessToken,
             refreshToken: refreshToken,
             idToken: idToken
@@ -121,6 +143,11 @@ enum CodexAuthReader {
 }
 
 enum ClaudeAuthReader {
+    private struct TokenPair: Hashable {
+        var access: String
+        var refresh: String?
+    }
+
     static func credentialsFileURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
     }
@@ -128,37 +155,57 @@ enum ClaudeAuthReader {
     /// All Claude Code logins on this machine: the standard credentials file (if any)
     /// plus every `Claude Code-credentials*` keychain item (covers multi-profile setups).
     /// De-duplicated by access token.
-    static func loadAll() -> [NativeClaudeAccount] {
+    static func loadAll(
+        importedCredentials: [ImportedCredential]
+    ) -> (accounts: [NativeClaudeAccount], linkedImportedAccountKeys: Set<String>) {
         var accounts: [NativeClaudeAccount] = []
-        var seenTokens = Set<String>()
+        var tokenIndices: [TokenPair: Int] = [:]
+        var linkedImportedAccountKeys = Set<String>()
 
         func add(_ account: NativeClaudeAccount?) {
             guard let account, let token = account.accessToken, !token.isEmpty else { return }
-            guard seenTokens.insert(token).inserted else { return }
+            let tokenPair = TokenPair(access: token, refresh: account.refreshToken)
+            if let existingIndex = tokenIndices[tokenPair] {
+                if case .imported(let id) = account.source {
+                    accounts[existingIndex].linkedImportedIDs.append(id)
+                    linkedImportedAccountKeys.insert(
+                        ImportedAccountStore.tokenKey(service: .claude, id: id)
+                    )
+                }
+                return
+            }
+            tokenIndices[tokenPair] = accounts.count
             accounts.append(account)
         }
 
         if let data = try? Data(contentsOf: credentialsFileURL()), !data.isEmpty {
-            var account = parse(data: data, source: .file, service: nil)
+            var account = parse(data: data, source: .file, service: nil, keychainAccount: nil)
             if account?.email == nil { account?.email = emailFromConfig() }
             add(account)
         }
 
-        for service in ClaudeKeychain.listServices() {
-            if let data = ClaudeKeychain.read(service: service) {
-                var account = parse(data: data, source: .keychain, service: service)
-                if account?.email == nil, service == ClaudeKeychain.canonicalService {
+        for item in ClaudeKeychain.listItems() {
+            if let data = ClaudeKeychain.read(service: item.service, account: item.account) {
+                var account = parse(
+                    data: data,
+                    source: .keychain,
+                    service: item.service,
+                    keychainAccount: item.account
+                )
+                if account?.email == nil, item.service == ClaudeKeychain.canonicalService {
                     account?.email = emailFromConfig()
                 }
                 add(account)
             }
         }
 
-        for imported in ImportedAccountStore.loadAll() where imported.service == .claude {
-            guard let tokens = ImportedAccountStore.loadTokens(accountId: ImportedAccountStore.tokenKey(imported)) else { continue }
+        for credential in importedCredentials where credential.account.service == .claude {
+            let imported = credential.account
+            let tokens = credential.tokens
             add(NativeClaudeAccount(
                 source: .imported(imported.id),
                 keychainService: nil,
+                keychainAccount: nil,
                 email: imported.email,
                 subscriptionType: imported.planType,
                 expiresAt: parseExpiry(tokens.expiresAtMillis.map(Double.init)),
@@ -167,7 +214,7 @@ enum ClaudeAuthReader {
             ))
         }
 
-        return accounts
+        return (accounts, linkedImportedAccountKeys)
     }
 
     private static func emailFromConfig() -> String? {
@@ -179,7 +226,12 @@ enum ClaudeAuthReader {
         return email
     }
 
-    private static func parse(data: Data, source: NativeClaudeAccount.Source, service: String?) -> NativeClaudeAccount? {
+    private static func parse(
+        data: Data,
+        source: NativeClaudeAccount.Source,
+        service: String?,
+        keychainAccount: String?
+    ) -> NativeClaudeAccount? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = root["claudeAiOauth"] as? [String: Any] else { return nil }
         let email = oauth["emailAddress"] as? String ?? oauth["email"] as? String
@@ -189,6 +241,7 @@ enum ClaudeAuthReader {
         return NativeClaudeAccount(
             source: source,
             keychainService: service,
+            keychainAccount: keychainAccount,
             email: email,
             subscriptionType: sub,
             expiresAt: parseExpiry(oauth["expiresAt"]),
@@ -292,13 +345,35 @@ enum SakanaAuthReader {
     }
 }
 
-/// Reads/writes Claude Code credential blobs in the login keychain via /usr/bin/security.
+enum ClaudeKeychainError: LocalizedError {
+    case unexpectedItem
+    case operationFailed(operation: String, status: OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .unexpectedItem:
+            return "钥匙串返回了无法识别的凭据项目"
+        case .operationFailed(let operation, let status):
+            let systemMessage = SecCopyErrorMessageString(status, nil) as String? ?? "未知错误"
+            return "钥匙串\(operation)失败（\(status)：\(systemMessage)）"
+        }
+    }
+}
+
+/// Reads Claude Code credential blobs through `/usr/bin/security` to preserve
+/// compatibility with the CLI item's access controls. Writes use Security.framework
+/// so token JSON is never exposed in the child process argument list.
 enum ClaudeKeychain {
     static let canonicalService = "Claude Code-credentials"
 
-    /// All generic-password services starting with the Claude Code prefix (canonical first).
+    struct Item: Hashable {
+        var service: String
+        var account: String
+    }
+
+    /// Every matching generic-password item, including its account attribute.
     /// Listing attributes does not prompt for keychain access; reading each secret might.
-    static func listServices() -> [String] {
+    static func listItems() -> [Item] {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecMatchLimit as String: kSecMatchLimitAll,
@@ -306,19 +381,35 @@ enum ClaudeKeychain {
         ]
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let items = result as? [[String: Any]] else {
-            return [canonicalService]
+              let items = result as? [[String: Any]] else { return [] }
+        let matching = items.compactMap { attributes -> Item? in
+            guard let service = attributes[kSecAttrService as String] as? String,
+                  service.hasPrefix(canonicalService),
+                  let account = attributes[kSecAttrAccount as String] as? String else { return nil }
+            return Item(
+                service: service,
+                account: account
+            )
         }
-        let services = items.compactMap { $0[kSecAttrService as String] as? String }
-            .filter { $0.hasPrefix(canonicalService) }
-        let unique = Array(Set(services)).sorted { a, _ in a == canonicalService }
-        return unique.isEmpty ? [canonicalService] : unique
+        let unique = Array(Set(matching)).sorted { lhs, rhs in
+            if (lhs.service == canonicalService) != (rhs.service == canonicalService) {
+                return lhs.service == canonicalService
+            }
+            if lhs.service != rhs.service { return lhs.service < rhs.service }
+            return lhs.account < rhs.account
+        }
+        return unique
     }
 
-    static func read(service: String) -> Data? {
+    static func read(service: String, account: String? = nil) -> Data? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        proc.arguments = ["find-generic-password", "-s", service, "-w"]
+        var arguments = ["find-generic-password", "-s", service]
+        if let account {
+            arguments.append(contentsOf: ["-a", account])
+        }
+        arguments.append("-w")
+        proc.arguments = arguments
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = Pipe()
@@ -331,12 +422,22 @@ enum ClaudeKeychain {
         return str.data(using: .utf8)
     }
 
-    static func write(service: String, json: String) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        proc.arguments = ["add-generic-password", "-U", "-s", service, "-a", NSUserName(), "-w", json]
-        proc.standardError = Pipe()
-        try? proc.run()
-        proc.waitUntilExit()
+    /// Refreshes may update only the exact item that was discovered. Never add
+    /// a replacement here: the CLI or user may have removed it meanwhile.
+    static func updateExistingReporting(service: String, account: String, data: Data) throws {
+        let query = baseQuery(service: service, account: account)
+        let update: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        guard status == errSecSuccess else {
+            throw ClaudeKeychainError.operationFailed(operation: "写入", status: status)
+        }
+    }
+
+    private static func baseQuery(service: String, account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
     }
 }
